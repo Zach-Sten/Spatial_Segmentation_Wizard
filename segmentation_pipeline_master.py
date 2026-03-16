@@ -212,11 +212,7 @@ def wizard():
     """Interactive configuration wizard. Returns a config dict."""
     banner()
 
-    cfg = {"project": {}, "data": {}, "paths": {}, "slurm": {"default": {}}, "methods": {}}
-
-    # ── Project ──
-    section("Project")
-    cfg["project"]["name"] = prompt("Project name", default="my_project")
+    cfg = {"data": {}, "paths": {}, "slurm": {"default": {}}, "methods": {}}
 
     # ── Data ──
     section("Data")
@@ -342,15 +338,6 @@ def wizard():
     section("Notifications")
     cfg["notifications"] = {}
     cfg["notifications"]["email"] = prompt("Email for job alerts (blank for none)", default="", required=False)
-    phone = prompt("Phone for text alerts, e.g. 555-123-4567 (blank for none)", default="", required=False)
-    if phone:
-        phone_digits = "".join(c for c in phone if c.isdigit())
-        if len(phone_digits) == 11 and phone_digits.startswith("1"):
-            phone_digits = phone_digits[1:]
-        cfg["notifications"]["phone"] = phone_digits
-        print(f"  {CHECK} Texts will be sent to ({phone_digits[:3]}) {phone_digits[3:6]}-{phone_digits[6:]}")
-    else:
-        cfg["notifications"]["phone"] = ""
 
     return cfg
 
@@ -364,9 +351,7 @@ def print_config_review(cfg):
     w = width()
     section("Configuration Review")
 
-    project = cfg.get("project", {})
     data = cfg.get("data", {})
-    print(f"  {BOLD}Project:{RESET}     {project.get('name', '')}")
     print(f"  {BOLD}Platform:{RESET}    {data.get('platform', '')}")
     if data.get("experiment_dir"):
         print(f"  {BOLD}Data mode:{RESET}   experiment")
@@ -402,14 +387,8 @@ def print_config_review(cfg):
 
     # Notifications
     notif = cfg.get("notifications", {})
-    notif_parts = []
     if notif.get("email"):
-        notif_parts.append(f"email → {notif['email']}")
-    if notif.get("phone"):
-        p = notif["phone"]
-        notif_parts.append(f"text → ({p[:3]}) {p[3:6]}-{p[6:]}")
-    if notif_parts:
-        print(f"\n  {BOLD}Notify:{RESET}      {', '.join(notif_parts)}")
+        print(f"\n  {BOLD}Notify:{RESET}      email → {notif['email']}")
 
     print()
 
@@ -564,7 +543,7 @@ def main():
         # Save config
         section("Save Configuration")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        config_path = os.path.realpath(f"config/pipeline_{cfg['project']['name']}_{timestamp}.yaml")
+        config_path = os.path.realpath(f"config/pipeline_{timestamp}.yaml")
         Path(config_path).parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, "w") as f:
             yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
