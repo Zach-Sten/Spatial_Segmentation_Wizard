@@ -449,6 +449,11 @@ def generate_and_submit(cfg, config_path, do_submit=False):
     for s in samples:
         by_slide[s.slide_name].append(s)
 
+    # Pre-create log directories — SLURM needs these to exist BEFORE the job starts
+    pipeline_root = str(Path(config_path).resolve().parent.parent)
+    for sample in samples:
+        sample.log_dir_in_pipeline(pipeline_root).mkdir(parents=True, exist_ok=True)
+
     total = len(samples) * (len(primary) + len(post) + (1 if run_qc else 0))
 
     section("Job Generation")

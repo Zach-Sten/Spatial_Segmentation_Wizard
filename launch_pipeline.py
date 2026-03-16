@@ -116,6 +116,11 @@ def main():
     for s in samples:
         by_slide[s.slide_name].append(s)
 
+    # Pre-create log directories — SLURM needs these to exist BEFORE the job starts
+    pipeline_root = str(Path(args.config).resolve().parent.parent)
+    for sample in samples:
+        sample.log_dir_in_pipeline(pipeline_root).mkdir(parents=True, exist_ok=True)
+
     all_scripts = []
 
     for slide_name, slide_samples in by_slide.items():
