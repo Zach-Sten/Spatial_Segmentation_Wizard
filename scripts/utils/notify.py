@@ -9,7 +9,7 @@ Usage (from SLURM scripts):
     python scripts/utils/notify.py \
         --config config/my_config.yaml \
         --method proseg \
-        --sample-id XETG00143__0032645 \
+        --sample-id SAMPLE__000001 \
         --status success \
         --job-id $SLURM_JOB_ID \
         --elapsed "45m12s"

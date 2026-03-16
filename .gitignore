@@ -1,6 +1,9 @@
 # Generated SLURM scripts
 scripts/slurm/generated/
 
+# Wizard-generated configs (contain user-specific paths/credentials)
+config/pipeline_*_2*.yaml
+
 # Runtime outputs
 segmentation_results/
 

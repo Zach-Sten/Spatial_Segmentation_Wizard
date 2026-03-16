@@ -24,10 +24,10 @@ from typing import List, Optional
 @dataclass
 class SampleInfo:
     """Represents a single discovered sample ready for processing."""
-    sample_id: str              # e.g. "XETG00143__0032645"
-    sample_dir: Path            # full path to the output-XETG... folder (raw input)
+    sample_id: str              # e.g. "SAMPLE__000001"
+    sample_dir: Path            # full path to the output-*... folder (raw input)
     slide_dir: Path             # parent slide folder
-    slide_name: str             # e.g. "20241114__203842__11142024_SPITZER_HN_DYSPLASIA1"
+    slide_name: str             # e.g. "slide_01_experiment_A"
     platform: str               # e.g. "xenium"
 
     def output_dir(self, method: str, output_base_override: str = "") -> Path:
@@ -95,8 +95,8 @@ def _extract_sample_id(folder_name: str) -> str:
     """
     Extract a clean sample ID from an output-* folder name.
 
-    'output-XETG00143__0032645__Region_1__20241114__203854'
-    →  'XETG00143__0032645'
+    'output-SAMPLE__000001__Region_1__20240101__120000'
+    →  'SAMPLE__000001'
 
     Falls back to the full folder name if the pattern doesn't match.
     """
@@ -105,7 +105,7 @@ def _extract_sample_id(folder_name: str) -> str:
     if name.startswith("output-"):
         name = name[len("output-"):]
 
-    # Try to extract the cartridge + slide portion: XETG00143__0032645
+    # Try to extract the cartridge + slide portion: SAMPLE__000001
     # Pattern: letters+digits + __ + digits (the two primary identifiers)
     match = re.match(r"^([A-Za-z0-9]+__\d+)", name)
     if match:
