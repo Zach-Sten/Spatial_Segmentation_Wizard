@@ -2,7 +2,11 @@
 """
 setup_test_data.py — Create a fake experiment directory tree for testing.
 
-Run this once, then use the test config:
+Generates a mock spatial transcriptomics experiment with multiple slides
+and samples so you can test the pipeline wizard and SLURM script generation
+without real data.
+
+Usage:
     python setup_test_data.py
     python segmentation_pipeline_master.py --config config/test_config.yaml
 """
@@ -11,32 +15,49 @@ from pathlib import Path
 
 TEST_ROOT = Path("test_data")
 
-# Two slides, two samples each
+# Mock experiment: 3 slides, varying numbers of samples per slide
 slides = {
-    "20241114__203842__11142024_SPITZER_HN_DYSPLASIA1": [
-        "output-XETG00143__0032645__Region_1__20241114__203854",
-        "output-XETG00143__0034280__Region_1__20241114__203854",
+    "slide_01_experiment_A": [
+        "output-SAM001__000001__Region_1__20240101__120000",
+        "output-SAM001__000002__Region_1__20240101__120000",
     ],
-    "20241121__001251__11202024_SPITZER_HN_DYSPLASIA2": [
-        "output-XETG00143__0035100__Region_1__20241121__001300",
+    "slide_02_experiment_A": [
+        "output-SAM002__000003__Region_1__20240201__140000",
+    ],
+    "slide_03_experiment_B": [
+        "output-SAM003__000004__Region_1__20240301__100000",
+        "output-SAM003__000005__Region_1__20240301__100000",
+        "output-SAM003__000006__Region_1__20240301__100000",
     ],
 }
 
+# Placeholder files that mimic typical spatial transcriptomics output
+PLACEHOLDER_FILES = [
+    "experiment.xenium",
+    "transcripts.parquet",
+    "cells.parquet",
+    "cells.csv.gz",
+    "cell_feature_matrix.h5",
+    "morphology.ome.tif",
+]
+
 print("Creating test directory tree...\n")
 
+total_samples = 0
 for slide_name, sample_dirs in slides.items():
     for sample_dir in sample_dirs:
         full_path = TEST_ROOT / slide_name / sample_dir
         full_path.mkdir(parents=True, exist_ok=True)
 
-        # Create placeholder files that mimic Xenium output
-        (full_path / "experiment.xenium").touch()
-        (full_path / "transcripts.parquet").touch()
-        (full_path / "cells.parquet").touch()
-        (full_path / "morphology.ome.tif").touch()
+        for fname in PLACEHOLDER_FILES:
+            (full_path / fname).touch()
 
+        total_samples += 1
         print(f"  {full_path}/")
 
+print(f"\n  {total_samples} sample(s) across {len(slides)} slide(s)")
 print(f"\nDone! Tree created at: {TEST_ROOT.resolve()}")
-print(f"\nNow run:")
+print(f"\nNext steps:")
 print(f"  python segmentation_pipeline_master.py --config config/test_config.yaml")
+print(f"  # or run the interactive wizard:")
+print(f"  python segmentation_pipeline_master.py")
