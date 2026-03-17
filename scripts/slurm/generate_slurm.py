@@ -117,9 +117,11 @@ def generate_slurm_script(
     bind_flag = " ".join(f"--bind {p}" for p in sorted(bind_paths))
 
     # Build the Python command with per-sample args
+    python_bin = "/opt/miniforge3/envs/spatial_segmentation_env/bin/python"
+
     if method == "cellspa_qc":
         py_args = (
-            f"    python {python_script} "
+            f"    {python_bin} {python_script} "
             f"--config {config_path} "
             f"--sample-id {sample.sample_id} "
             f"--slide-dir {sample.slide_dir}"
@@ -128,7 +130,7 @@ def generate_slurm_script(
         source_method = method_cfg["params"].get("source_method", "proseg")
         source_dir = sample.output_dir(source_method, output_base)
         py_args = (
-            f"    python {python_script} "
+            f"    {python_bin} {python_script} "
             f"--config {config_path} "
             f"--sample-dir {sample.sample_dir} "
             f"--output-dir {output_dir} "
@@ -137,7 +139,7 @@ def generate_slurm_script(
         )
     else:
         py_args = (
-            f"    python {python_script} "
+            f"    {python_bin} {python_script} "
             f"--config {config_path} "
             f"--sample-dir {sample.sample_dir} "
             f"--output-dir {output_dir} "
