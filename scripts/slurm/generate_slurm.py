@@ -73,7 +73,7 @@ def generate_slurm_script(
     ]
 
     if slurm.get("gpu", False):
-        lines.append("#SBATCH --gpus=1")
+        lines.append("#SBATCH --gres=gpu:1g.10gb:1")
     if slurm.get("partition"):
         lines.append(f"#SBATCH --partition={slurm['partition']}")
     if slurm.get("account"):

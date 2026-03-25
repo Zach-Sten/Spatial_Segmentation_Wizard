@@ -38,6 +38,14 @@ def configure_threads(cpus: int = None):
     os.environ["OMP_NUM_THREADS"] = str(cpus)
     os.environ["OPENBLAS_NUM_THREADS"] = str(cpus)
     os.environ["MKL_NUM_THREADS"] = str(cpus)
+
+    # Suppress deprecation warnings in dask worker subprocesses (inherited via env)
+    os.environ["DASK_DATAFRAME__QUERY_PLANNING"] = "true"
+    os.environ.setdefault(
+        "PYTHONWARNINGS",
+        "ignore::FutureWarning:dask,ignore::UserWarning:xarray_schema,ignore::UserWarning:pkg_resources",
+    )
+
     print(f"[INFO] Thread count set to {cpus}")
     return cpus
 
