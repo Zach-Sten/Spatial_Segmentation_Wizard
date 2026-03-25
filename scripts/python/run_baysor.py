@@ -9,6 +9,7 @@ Called by the generated SLURM script with sample-specific paths:
 import os
 import sys
 import time
+import asyncio
 import argparse
 from pathlib import Path
 
@@ -76,7 +77,14 @@ def main():
 
     @timed("Baysor segmentation")
     def _run():
-        sopa.segmentation.baysor(sdata, min_area=params.get("min_area", 10))
+        try:
+            sopa.segmentation.baysor(sdata, min_area=params.get("min_area", 10))
+        except asyncio.TimeoutError:
+            # Dask worker cleanup times out because Julia/baysor subprocesses are
+            # slow to exit. Patch results are already written to disk — call again
+            # to skip reprocessing and just collect results into sdata.
+            print("[WARN] Dask worker cleanup timed out — patch results intact, collecting...")
+            sopa.segmentation.baysor(sdata, min_area=params.get("min_area", 10))
     _run()
 
     aggregate_and_save(
