@@ -83,7 +83,7 @@ def banner():
 
 def section(title):
     w = width()
-    print(f"\n{BOLD}{CYAN}── {title} {'─' * max(0, w - len(title) - 4)}{RESET}\n")
+    print(f"\n{BOLD}── {title} {'─' * max(0, w - len(title) - 4)}{RESET}\n")
 
 
 def prompt(label, default=None, required=True):
@@ -280,7 +280,7 @@ def wizard():
 
     # ── Methods ──
     section("Segmentation Methods")
-    all_methods = ["proseg", "baysor", "cellpose", "bidcell"]
+    all_methods = ["proseg", "baysor", "cellpose", "bidcell", "fastreseg"]
     selected = prompt_multi(
         "Which methods to run?", all_methods, defaults=["proseg", "baysor", "cellpose"]
     )
@@ -307,21 +307,21 @@ def wizard():
         },
     }
 
+    FASTRESEG_DEFAULT = {
+        "slurm": {"mem": "200G", "cpus_per_task": 4, "time": "1-00:00:00"},
+        "params": {"source_method": "proseg"},
+    }
+
     for method in all_methods:
         enabled = method in selected
         cfg["methods"][method] = {"enabled": enabled}
         if enabled and method in METHOD_DEFAULTS:
             cfg["methods"][method].update(METHOD_DEFAULTS[method])
+        elif method == "fastreseg" and enabled:
+            cfg["methods"][method].update(FASTRESEG_DEFAULT)
 
     print()
-    run_fastreseg = prompt_yn("Enable FastReseg (post-hoc refinement)?", default=False)
-    cfg["methods"]["fastreseg"] = {
-        "enabled": run_fastreseg,
-        "slurm": {"mem": "200G", "cpus_per_task": 4, "time": "1-00:00:00"},
-        "params": {"source_method": selected[0] if selected else "proseg"},
-    }
-
-    run_qc = prompt_yn("Enable QC (runs after segmentation)?", default=True)
+    run_qc = prompt_yn("Run CellSpa QC (runs after segmentation)?", default=True)
     cfg["methods"]["cellspa_qc"] = {
         "enabled": run_qc,
         "slurm": {"mem": "100G", "cpus_per_task": 4, "time": "0-12:00:00"},
@@ -513,13 +513,12 @@ def generate_and_submit(cfg, config_path, do_submit=False):
 
     # Summary
     w = width()
-    print(f"{CYAN}{'━' * w}{RESET}")
     print(f"  {BOLD}{len(all_scripts)}{RESET} script(s) generated {ARROW} {out_path}/")
     if do_submit:
         print(f"  {BOLD}{len(all_job_ids)}{RESET} job(s) submitted")
         print(f"  Monitor: {BOLD}squeue -u $USER{RESET}")
     print(f"  Config:  {BOLD}{config_path}{RESET}")
-    print(f"{CYAN}{'━' * w}{RESET}")
+    print(f"{'━' * w}")
     print()
 
 
@@ -541,13 +540,11 @@ def main():
         cfg = wizard()
 
         # Save config
-        section("Save Configuration")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         config_path = os.path.realpath(f"config/pipeline_{timestamp}.yaml")
         Path(config_path).parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, "w") as f:
             yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
-        print(f"  {CHECK} Saved: {config_path}")
 
     # ── Review ──
     print_config_review(cfg)
@@ -569,22 +566,25 @@ def main():
         print(f"\n  {YELLOW}⚠ Cannot discover samples: {e}{RESET}")
         print(f"  {DIM}Generating scripts anyway (paths will be baked in from config){RESET}\n")
 
-    # ── Generate ──
-    if not prompt_yn(f"Generate SLURM scripts?", default=True):
+    # ── Generate + Submit ──
+    print(f"  Generate SLURM scripts?")
+    print(f"   {GREEN}*{RESET} y) generate and run")
+    print(f"     g) generate only")
+    print(f"     n) cancel")
+    action = input(f"  Choice [y]: ").strip().lower()
+    if not action:
+        action = "y"
+
+    if action == "n":
         print(f"\n  {DIM}Exiting. Config saved to: {config_path}{RESET}\n")
         return
-
-    generate_and_submit(cfg, config_path, do_submit=False)
-
-    # ── Submit ──
-    print()
-    if prompt_yn(f"{BOLD}Submit jobs to SLURM now?{RESET}", default=False):
+    elif action == "g":
+        print()
+        generate_and_submit(cfg, config_path, do_submit=False)
+        print(f"  {DIM}To submit later: python segmentation_pipeline_master.py --config {config_path}{RESET}\n")
+    else:
         print()
         generate_and_submit(cfg, config_path, do_submit=True)
-    else:
-        print(f"\n  {DIM}To submit later:{RESET}")
-        print(f"  {BOLD}python segmentation_pipeline_master.py --config {config_path}{RESET}")
-        print(f"  {DIM}Then answer 'y' to the submit prompt.{RESET}\n")
 
 
 if __name__ == "__main__":
