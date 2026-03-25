@@ -280,7 +280,19 @@ def wizard():
 
     # ── Methods ──
     section("Segmentation Methods")
-    all_methods = ["proseg", "baysor", "cellpose", "bidcell", "fastreseg"]
+
+    # BIDCell requires user-provided reference files in references/bidcell/
+    BIDCELL_REF_DIR = Path("references/bidcell")
+    BIDCELL_REF_FILES = ["fp_ref", "fp_pos_markers", "fp_neg_markers"]
+    bidcell_refs = list(BIDCELL_REF_DIR.glob("*.csv")) if BIDCELL_REF_DIR.exists() else []
+    bidcell_available = len(bidcell_refs) >= len(BIDCELL_REF_FILES)
+
+    all_methods = ["proseg", "baysor", "cellpose", "fastreseg"]
+    if bidcell_available:
+        all_methods.insert(3, "bidcell")
+    else:
+        print(f"  {DIM}BIDCell unavailable — place reference CSVs in {BIDCELL_REF_DIR}/ to enable{RESET}\n")
+
     selected = prompt_multi(
         f"Which methods to run? {DIM}(✓ = SOPA-supported){RESET}", all_methods, defaults=["proseg", "baysor", "cellpose"]
     )

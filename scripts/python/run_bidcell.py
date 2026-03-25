@@ -57,7 +57,10 @@ def main():
         sys.exit(1)
 
     # Get or generate BIDCell config
+    import yaml as _yaml
     from bidcell import BIDCellModel
+
+    sample_dir = Path(args.sample_dir)
 
     if args.bidcell_config:
         bidcell_config = Path(args.bidcell_config)
@@ -69,7 +72,33 @@ def main():
         if os.path.exists(example_name):
             import shutil
             shutil.move(example_name, str(bidcell_config))
-        print(f"[WARN] Review data paths in: {bidcell_config}")
+
+        # Patch auto-detectable paths for the sample
+        PLATFORM_FILES = {
+            "xenium": {
+                "fp_dapi": "morphology_mip.ome.tif",
+                "fp_transcripts": "transcripts.csv.gz",
+            },
+        }
+        with open(bidcell_config) as f:
+            bc_cfg = _yaml.safe_load(f)
+
+        bc_cfg.setdefault("files", {})["data_dir"] = str(sample_dir)
+        for key, fname in PLATFORM_FILES.get(platform, {}).items():
+            bc_cfg["files"][key] = str(sample_dir / fname)
+
+        with open(bidcell_config, "w") as f:
+            _yaml.dump(bc_cfg, f, default_flow_style=False)
+
+        # Check if reference files are still unset — can't run without them
+        ref_keys = ["fp_ref", "fp_pos_markers", "fp_neg_markers"]
+        missing = [k for k in ref_keys if not Path(bc_cfg["files"].get(k, "")).exists()]
+        if missing:
+            print(f"[WARN] BIDCell requires reference files not yet provided: {missing}")
+            print(f"[INFO] Edit the config and rerun with:")
+            print(f"       --bidcell-config {bidcell_config}")
+            print(f"[INFO] Config written to: {bidcell_config}")
+            sys.exit(0)
 
     @timed("BIDCell full pipeline")
     def _run():
