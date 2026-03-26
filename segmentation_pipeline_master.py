@@ -146,7 +146,7 @@ def prompt_multi(label, options, defaults=None):
         print(f"   {marker} {i}) {opt}")
 
     print(f"  {DIM}Enter numbers separated by spaces, or 'all' / 'none'{RESET}")
-    val = input(f"  Select [{','.join(str(options.index(d)+1) for d in defaults)}]: ").strip()
+    val = input(f"  Select [{','.join(str(options.index(d)+1) for d in defaults)}]: ").strip().strip("'\"")
 
     if not val:
         return defaults
@@ -585,7 +585,13 @@ def main():
             print(f"  {slide}/")
             for s in ss:
                 print(f"    {ARROW} {s.sample_id}")
-        print(f"\n  {BOLD}Total: {len(samples)} sample(s){RESET}\n")
+
+        enabled = [m for m, mc in cfg.get("methods", {}).items() if mc.get("enabled") and m != "cellspa_qc"]
+        qc_enabled = cfg.get("methods", {}).get("cellspa_qc", {}).get("enabled", False)
+        method_str = ", ".join(enabled) if enabled else f"{DIM}none{RESET}"
+        qc_str = f" + CellSPA QC" if qc_enabled else ""
+        print(f"\n  {BOLD}Total: {len(samples)} sample(s){RESET}")
+        print(f"  {BOLD}Methods:{RESET} {method_str}{qc_str}\n")
     except Exception as e:
         print(f"\n  {YELLOW}⚠ Cannot discover samples: {e}{RESET}")
         print(f"  {DIM}Generating scripts anyway (paths will be baked in from config){RESET}\n")
