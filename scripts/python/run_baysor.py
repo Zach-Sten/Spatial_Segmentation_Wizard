@@ -82,13 +82,16 @@ def main():
     print(f"[INFO] Running Baysor on {n_tiles} transcript patches...")
 
     def _has_baysor_results():
-        """Check if baysor boundaries were successfully committed to sdata."""
-        keys = [k for k in sdata.shapes if "boundaries" in k and "patch" not in k
-                and k != "cell_boundaries"]
-        if keys:
-            print(f"[INFO] Baysor results found in sdata: {keys}")
+        """Check if sopa can find valid segmentation results in sdata."""
+        try:
+            from sopa.utils import get_boundaries
+            key, _ = get_boundaries(sdata, return_key=True)
+            print(f"[INFO] Valid segmentation found in sdata: '{key}'")
             return True
-        return False
+        except Exception:
+            all_keys = list(sdata.shapes.keys())
+            print(f"[INFO] No valid sopa segmentation in sdata. Shape keys: {all_keys}")
+            return False
 
     @timed("Baysor segmentation")
     def _run():
