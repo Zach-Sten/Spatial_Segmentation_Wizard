@@ -57,25 +57,17 @@ def configure_threads(cpus: int = None):
 def configure_dask(cpus: int):
     """Configure Dask for sopa/Baysor parallelization.
 
-    Uses dask.distributed (LocalCluster) so sopa can run baysor patches in
-    parallel across multiple workers. The key settings here extend the worker
-    shutdown timeout so Julia subprocesses (which are slow to exit after baysor
-    completes) don't cause a TimeoutError during cluster teardown.
+    Uses dask.distributed (LocalCluster) so sopa runs baysor patches in
+    parallel across multiple workers.
     """
     import dask
 
     dask.config.set({
         "distributed.worker.nthreads": 1,
-        "distributed.comm.timeouts.connect": "120s",
-        "distributed.comm.timeouts.tcp": "120s",
-        "distributed.nanny.environ.MALLOC_TRIM_THRESHOLD_": 65536,
-        "distributed.scheduler.worker-ttl": None,
-        "distributed.worker.lifetime.duration": None,
-        "distributed.worker.lifetime.stagger": "0s",
         "dataframe.query-planning": True,
         "array.rechunk.method": "tasks",
     })
-    print(f"[INFO] Dask configured: distributed backend, {cpus} CPUs, extended shutdown timeout")
+    print(f"[INFO] Dask configured: distributed backend, {cpus} CPUs available")
 
 
 # ── Data loading ──
