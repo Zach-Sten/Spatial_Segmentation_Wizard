@@ -159,19 +159,19 @@ def replace_proseg_counts(adata, expected_counts_path: str):
 
     # Sopa may filter cells after aggregation (e.g. low channel intensity),
     # leaving adata with fewer rows than the full ProSeg expected counts matrix.
-    # Align by treating obs_names as 1-indexed ProSeg cell IDs.
+    # Align using _proseg_idx stored in obs before filtering.
     if C.shape[0] != adata.n_obs:
-        try:
-            cell_idx = np.array(adata.obs_names.astype(int)) - 1
-            C = C[cell_idx]
-            print(f"[INFO] Aligned expected counts to {adata.n_obs} surviving cells "
-                  f"(filtered {C.shape[0] - adata.n_obs if C.shape[0] > adata.n_obs else 0} "
-                  f"low-quality cells)")
-        except (ValueError, IndexError) as e:
+        if "_proseg_idx" not in adata.obs.columns:
             raise ValueError(
                 f"Expected counts shape {C.shape} doesn't match adata "
-                f"({adata.n_obs}, {adata.n_vars}) and could not align by obs_names: {e}"
+                f"({adata.n_obs}, {adata.n_vars}) and no _proseg_idx column found in obs. "
+                f"Re-run with the latest run_proseg.py to generate this index."
             )
+        cell_idx = adata.obs["_proseg_idx"].values
+        n_original = C.shape[0]
+        C = C[cell_idx]
+        print(f"[INFO] Aligned expected counts: {n_original} → {adata.n_obs} cells "
+              f"({n_original - adata.n_obs} filtered by sopa)")
 
     adata.layers["expected_counts"] = C.copy()
 

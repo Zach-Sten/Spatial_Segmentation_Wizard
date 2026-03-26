@@ -81,6 +81,11 @@ def main():
         sopa.segmentation.proseg(sdata, command_line_suffix=cmd_suffix)
     _run()
 
+    # Tag each cell with its 0-indexed row position in the ProSeg expected counts
+    # matrix BEFORE sopa filters low-intensity cells during aggregation.
+    if "table" in sdata.tables:
+        sdata["table"].obs["_proseg_idx"] = range(len(sdata["table"]))
+
     # ── Aggregate + export ──
     adata = aggregate_and_save(
         sdata, output_dir, args.sample_id,
