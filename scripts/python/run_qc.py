@@ -283,7 +283,10 @@ def export_for_r(adata, method: str, qc_dir: Path, method_output_dir: Path) -> t
         coords_path = None
 
     # Export obs metadata (numeric columns only — R colData)
+    # Always write at least one column so R's read.csv doesn't fail on empty input
     numeric_obs = adata.obs.select_dtypes(include="number")
+    if numeric_obs.shape[1] == 0:
+        numeric_obs = pd.DataFrame({"placeholder": np.zeros(len(adata), dtype=np.float32)})
     numeric_obs.to_csv(meta_path, index=False)
 
     # Export boundary polygon vertices as CellSegOutput for CellSPA generatePolygon()
@@ -299,10 +302,14 @@ def export_for_r(adata, method: str, qc_dir: Path, method_output_dir: Path) -> t
         try:
             import geopandas as gpd
             gdf = gpd.read_parquet(boundary_parquet)
+            print(f"[INFO] Boundaries loaded: {len(gdf)} shapes, index dtype={gdf.index.dtype}, "
+                  f"sample index values={list(gdf.index[:3])}")
             # Align to cells that survived sopa filtering
             gdf.index = gdf.index.astype(str)
             cell_ids = set(adata.obs_names.astype(str))
+            print(f"[INFO] Cell ID sample (adata): {list(adata.obs_names[:3])}")
             gdf = gdf[gdf.index.isin(cell_ids)]
+            print(f"[INFO] Boundaries after ID filter: {len(gdf)} shapes")
 
             # Extract exterior ring vertices → (x, y, cell_id) rows
             rows = []
@@ -319,7 +326,27 @@ def export_for_r(adata, method: str, qc_dir: Path, method_output_dir: Path) -> t
                 print(f"[INFO] Boundary vertices exported: {len(rows):,} points, "
                       f"{len(gdf):,} cells → {cellseg_path.name}")
         except Exception as e:
-            print(f"[WARN] Could not export boundary vertices: {e}")
+            if "geo metadata" in str(e).lower() or "Missing geo" in str(e):
+                # Xenium native format: regular parquet with vertex_x, vertex_y, cell_id columns
+                try:
+                    df = pd.read_parquet(boundary_parquet)
+                    if "vertex_x" in df.columns and "vertex_y" in df.columns and "cell_id" in df.columns:
+                        cell_ids = set(adata.obs_names.astype(str))
+                        df["cell_id"] = df["cell_id"].astype(str)
+                        df = df[df["cell_id"].isin(cell_ids)]
+                        if not df.empty:
+                            cellseg_path = qc_dir / f"cellseg_{method}.csv"
+                            df[["vertex_x", "vertex_y", "cell_id"]].rename(
+                                columns={"vertex_x": "x", "vertex_y": "y"}
+                            ).to_csv(cellseg_path, index=False)
+                            print(f"[INFO] Boundary vertices exported (Xenium native): "
+                                  f"{len(df):,} points → {cellseg_path.name}")
+                    else:
+                        print(f"[WARN] Could not export boundary vertices: {e}")
+                except Exception as e2:
+                    print(f"[WARN] Could not export boundary vertices: {e2}")
+            else:
+                print(f"[WARN] Could not export boundary vertices: {e}")
 
     return counts_path, coords_path, meta_path, cellseg_path
 
