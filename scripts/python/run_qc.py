@@ -79,6 +79,17 @@ if (!is.null(cellseg_path) && file.exists(cellseg_path)) {
     cat(sprintf("[INFO] SPE cells found in CellSegOutput: %d / %d\\n",
                 n_spe_in_seg, ncol(spe)))
 
+    # calBaselineAllMetrics requires spe@metadata$CellSPA$metrics[["total_transciprts"]]
+    # (CellSPA's own typo). processingSPE should populate this but skips it when
+    # expected colData fields are missing. Populate it manually to be safe.
+    if (is.null(spe@metadata$CellSPA)) {
+        spe@metadata$CellSPA <- list(metrics = list())
+    }
+    if (is.null(spe@metadata$CellSPA$metrics[["total_transciprts"]])) {
+        spe@metadata$CellSPA$metrics[["total_transciprts"]] <- colSums(counts(spe))
+        cat("[INFO] Populated total_transciprts for calBaselineAllMetrics\\n")
+    }
+
     spe <- tryCatch(
         calBaselineAllMetrics(spe, verbose = FALSE),
         error = function(e) {
