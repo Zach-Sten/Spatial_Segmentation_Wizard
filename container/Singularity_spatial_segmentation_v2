@@ -57,6 +57,27 @@ From: ubuntu:20.04
     pkg-config \
     tree \
     vim \
+    wget \
+    || true
+  # Second pass: pick up anything the proxy dropped on first attempt
+  apt-get install -y --fix-missing \
+    apt-utils \
+    build-essential \
+    cmake \
+    curl \
+    gfortran \
+    git \
+    gnupg \
+    gnupg2 \
+    libcairo2-dev \
+    libffi-dev \
+    libglib2.0-dev \
+    libgl1 \
+    libssl-dev \
+    nano \
+    pkg-config \
+    tree \
+    vim \
     wget
 
   apt-get clean
