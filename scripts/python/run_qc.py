@@ -68,12 +68,23 @@ if (!is.null(cellseg_path) && file.exists(cellseg_path)) {
     cellseg <- read.csv(cellseg_path)
     cellseg$cell_id <- as.character(cellseg$cell_id)
     spe@metadata$CellSegOutput <- cellseg
-    cat(sprintf("[INFO] CellSegOutput loaded: %d points\\n", nrow(cellseg)))
+    cat(sprintf("[INFO] CellSegOutput loaded: %d points, %d unique cells\\n",
+                nrow(cellseg), length(unique(cellseg$cell_id))))
+
+    # Verify ID alignment between CellSegOutput and SPE
+    n_seg_in_spe <- sum(unique(cellseg$cell_id) %in% colnames(spe))
+    n_spe_in_seg <- sum(colnames(spe) %in% unique(cellseg$cell_id))
+    cat(sprintf("[INFO] CellSegOutput cells found in SPE: %d / %d\\n",
+                n_seg_in_spe, length(unique(cellseg$cell_id))))
+    cat(sprintf("[INFO] SPE cells found in CellSegOutput: %d / %d\\n",
+                n_spe_in_seg, ncol(spe)))
 
     spe <- tryCatch(
         calBaselineAllMetrics(spe, verbose = FALSE),
         error = function(e) {
-            cat(sprintf("[WARN] calBaselineAllMetrics: %s\\n", e$message)); spe
+            cat(sprintf("[WARN] calBaselineAllMetrics error: %s\\n", e$message))
+            cat(sprintf("[WARN] Failed call: %s\\n", deparse(e$call)))
+            spe
         }
     )
     cat("[INFO] calBaselineAllMetrics complete\\n")
