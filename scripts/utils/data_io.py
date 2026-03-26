@@ -57,18 +57,20 @@ def configure_threads(cpus: int = None):
 def configure_dask(cpus: int):
     """Configure Dask for sopa/Baysor parallelization.
 
-    sopa's Baysor backend uses dask.distributed (LocalCluster with worker
-    processes). Do NOT set a ThreadPool here — pool objects cannot be pickled
-    across processes and will cause all distributed workers to fail at startup.
+    Uses the threaded scheduler with a ThreadPool — this is what allows baysor
+    patches to run in parallel without the LocalCluster worker-process overhead
+    that causes cleanup timeouts when Julia subprocesses are slow to exit.
     """
     import dask
+    from multiprocessing.pool import ThreadPool
 
     dask.config.set({
-        "distributed.worker.nthreads": 1,
-        "dataframe.query-planning": True,
+        "scheduler": "threads",
+        "dataframe.query-planning": None,
         "array.rechunk.method": "tasks",
     })
-    print(f"[INFO] Dask configured: distributed backend, {cpus} CPUs available")
+    dask.config.set(pool=ThreadPool(cpus))
+    print(f"[INFO] Dask configured: threaded scheduler, {cpus} threads")
 
 
 # ── Data loading ──
