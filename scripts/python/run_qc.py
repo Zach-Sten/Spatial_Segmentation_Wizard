@@ -58,6 +58,9 @@ spe <- SpatialExperiment(
     spatialCoords = coords
 )
 
+# Add placeholder celltype — CellSPA functions expect this column
+colData(spe)$celltype <- "all"
+
 spe <- tryCatch(processingSPE(spe), error = function(e) {
     cat(sprintf("[WARN] processingSPE: %s\\n", e$message)); spe
 })
