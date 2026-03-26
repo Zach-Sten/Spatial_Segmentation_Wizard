@@ -25,44 +25,32 @@ from utils.data_io import configure_threads, save_run_metadata, timed
 
 
 # ── CellSPA R script (reference-free: spatial + basic QC metrics) ──────────────
+# Reads pre-exported CSV/MTX files from Python — no zellkonverter needed.
 CELLSPA_R_SCRIPT = """\
 suppressPackageStartupMessages({
     library(CellSPA)
-    library(zellkonverter)
     library(SpatialExperiment)
     library(SingleCellExperiment)
+    library(Matrix)
 })
 
 args <- commandArgs(trailingOnly = TRUE)
-h5ad_path  <- args[1]
-method_name <- args[2]
-output_dir  <- args[3]
+counts_path <- args[1]
+coords_path <- args[2]
+method_name <- args[3]
+output_dir  <- args[4]
 
 cat(sprintf("[INFO] CellSPA QC: %s\\n", method_name))
-cat(sprintf("[INFO] Reading: %s\\n", h5ad_path))
 
-sce <- readH5AD(h5ad_path, verbose = FALSE)
-cat(sprintf("[INFO] Loaded: %d cells x %d genes\\n", ncol(sce), nrow(sce)))
+# Load pre-exported counts (genes x cells MTX) and coordinates
+counts <- readMM(counts_path)
+coords_df <- read.csv(coords_path)
+coords <- as.matrix(coords_df[, c("x", "y")])
 
-# Extract spatial coordinates (sopa writes them to obsm['spatial'])
-coords <- NULL
-if ("spatial" %in% reducedDimNames(sce)) {
-    coords <- reducedDim(sce, "spatial")
-} else {
-    cd <- as.data.frame(colData(sce))
-    xy_cols <- intersect(c("x", "y", "spatial_x", "spatial_y"), colnames(cd))
-    if (length(xy_cols) >= 2) coords <- as.matrix(cd[, xy_cols[1:2]])
-}
-
-if (is.null(coords)) {
-    cat("[WARN] No spatial coordinates found — cannot build SpatialExperiment\\n")
-    quit(status = 0)
-}
-colnames(coords) <- c("x", "y")
+cat(sprintf("[INFO] Loaded: %d cells x %d genes\\n", ncol(counts), nrow(counts)))
 
 spe <- SpatialExperiment(
-    assays      = list(counts = counts(sce)),
-    colData     = colData(sce),
+    assays        = list(counts = counts),
     spatialCoords = coords
 )
 
@@ -101,13 +89,48 @@ print(summary_df)
 """
 
 
-def run_cellspa(h5ad_path: Path, method: str, qc_dir: Path) -> bool:
-    """Write and run the CellSPA R script for one method. Returns True on success."""
+def export_for_r(adata, method: str, qc_dir: Path) -> tuple:
+    """Export counts (MTX) and spatial coords (CSV) for the R script. Returns (counts_path, coords_path)."""
+    from scipy.io import mmwrite
+    import scipy.sparse as sp
+
+    counts_path = qc_dir / f"counts_{method}.mtx"
+    coords_path = qc_dir / f"coords_{method}.csv"
+
+    # Write genes x cells MTX
+    X = adata.X if sp.issparse(adata.X) else sp.csr_matrix(adata.X)
+    mmwrite(str(counts_path), X.T)
+
+    # Extract spatial coords — sopa stores them in obsm['spatial']
+    if "spatial" in adata.obsm:
+        coords = adata.obsm["spatial"][:, :2]
+    else:
+        xy_cols = [c for c in adata.obs.columns if c in ("x", "y", "spatial_x", "spatial_y")]
+        if len(xy_cols) >= 2:
+            coords = adata.obs[xy_cols[:2]].values
+        else:
+            coords = None
+
+    if coords is not None:
+        pd.DataFrame(coords, columns=["x", "y"]).to_csv(coords_path, index=False)
+    else:
+        print(f"[WARN] No spatial coordinates found for {method} — spatial metrics will be skipped")
+        coords_path = None
+
+    return counts_path, coords_path
+
+
+def run_cellspa(adata, method: str, qc_dir: Path) -> bool:
+    """Export data, write and run the CellSPA R script for one method. Returns True on success."""
+    counts_path, coords_path = export_for_r(adata, method, qc_dir)
+    if coords_path is None:
+        return False
+
     r_script = qc_dir / f"run_cellspa_{method}.R"
     r_script.write_text(CELLSPA_R_SCRIPT)
 
     result = subprocess.run(
-        ["Rscript", str(r_script), str(h5ad_path), method, str(qc_dir)],
+        ["Rscript", str(r_script), str(counts_path), str(coords_path), method, str(qc_dir)],
         capture_output=True, text=True,
     )
     print(result.stdout)
@@ -207,7 +230,7 @@ def main():
         # CellSPA R metrics
         @timed(f"CellSPA metrics: {method}")
         def _cellspa():
-            return run_cellspa(h5ad_path, method, qc_dir)
+            return run_cellspa(adata, method, qc_dir)
         success = _cellspa()
 
         if success:
