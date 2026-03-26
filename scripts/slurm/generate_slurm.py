@@ -124,7 +124,8 @@ def generate_slurm_script(
             f"    {python_bin} {python_script} "
             f"--config {config_path} "
             f"--sample-id {sample.sample_id} "
-            f"--slide-dir {sample.slide_dir}"
+            f"--slide-dir {sample.slide_dir} "
+            f"--sample-dir {sample.sample_dir}"
         )
     elif method == "fastreseg":
         source_method = method_cfg["params"].get("source_method", "proseg")
@@ -151,6 +152,18 @@ def generate_slurm_script(
     has_notify = bool(notif.get("email") or notif.get("phone"))
 
     if has_notify:
+        # For QC jobs, attach the PDF report if it exists
+        qc_pdf_line = ""
+        if method == "cellspa_qc":
+            qc_dir = (
+                (Path(output_base) / sample.slide_name / "qc" / sample.sample_id)
+                if output_base else
+                (sample.slide_dir / "qc" / sample.sample_id)
+            )
+            qc_pdf_line = f"        --attachment \"{qc_dir}/qc_report.pdf\" \\"
+
+        attachment_lines = [qc_pdf_line] if qc_pdf_line else []
+
         lines += [
             "# ── Notification setup ──",
             "SEG_START=$(date +%s)",
@@ -168,7 +181,9 @@ def generate_slurm_script(
             f"        --sample-id {sample.sample_id} \\",
             "        --status $status \\",
             "        --job-id ${SLURM_JOB_ID:-local} \\",
-            "        --elapsed \"$elapsed_min\" || true",
+            "        --elapsed \"$elapsed_min\" \\",
+            *attachment_lines,
+            "        || true",
             "}",
             "",
         ]

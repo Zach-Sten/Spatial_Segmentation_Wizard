@@ -21,6 +21,8 @@ import yaml
 import argparse
 import subprocess
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 from datetime import datetime
 
 # All major US carrier email-to-SMS gateways
@@ -44,41 +46,65 @@ def load_notification_config(config_path: str) -> dict:
     return cfg.get("notifications", {})
 
 
-def send_via_sendmail(to_addr: str, subject: str, body: str) -> bool:
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["To"] = to_addr
-    msg["From"] = f"segmentation-pipeline@{os.uname().nodename}"
+def build_mime(to_addr: str, subject: str, body: str, attachment_path: str = None):
+    """Build a MIME message, optionally with a PDF attachment."""
+    from_addr = f"segmentation-pipeline@{os.uname().nodename}"
+    if attachment_path and os.path.exists(attachment_path):
+        msg = MIMEMultipart()
+        msg["Subject"] = subject
+        msg["To"] = to_addr
+        msg["From"] = from_addr
+        msg.attach(MIMEText(body))
+        fname = os.path.basename(attachment_path)
+        with open(attachment_path, "rb") as f:
+            part = MIMEApplication(f.read(), _subtype="pdf")
+            part.add_header("Content-Disposition", "attachment", filename=fname)
+            msg.attach(part)
+    else:
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["To"] = to_addr
+        msg["From"] = from_addr
+    return msg
+
+
+def send_via_sendmail(to_addr: str, subject: str, body: str, attachment_path: str = None) -> bool:
+    msg = build_mime(to_addr, subject, body, attachment_path)
     try:
         proc = subprocess.run(
             ["sendmail", "-t"],
             input=msg.as_string(),
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=30,
         )
         return proc.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
 
-def send_via_mail(to_addr: str, subject: str, body: str) -> bool:
+def send_via_mail(to_addr: str, subject: str, body: str, attachment_path: str = None) -> bool:
+    cmd = ["mail", "-s", subject]
+    if attachment_path and os.path.exists(attachment_path):
+        # Try mailx -a flag (works on most Linux systems)
+        cmd += ["-a", attachment_path]
+    cmd.append(to_addr)
     try:
         proc = subprocess.run(
-            ["mail", "-s", subject, to_addr],
+            cmd,
             input=body,
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=30,
         )
         return proc.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
 
-def send_one(to_addr: str, subject: str, body: str) -> bool:
-    return send_via_sendmail(to_addr, subject, body) or \
-           send_via_mail(to_addr, subject, body)
+def send_one(to_addr: str, subject: str, body: str, attachment_path: str = None) -> bool:
+    return send_via_sendmail(to_addr, subject, body, attachment_path) or \
+           send_via_mail(to_addr, subject, body, attachment_path)
 
 
 def send_sms(phone: str, subject: str, body: str):
-    """Send to all carrier gateways. Only the right one delivers."""
+    """Send to all carrier gateways (plain text only — no attachment for SMS)."""
     for gateway in SMS_GATEWAYS:
         addr = f"{phone}@{gateway}"
         send_one(addr, subject, body)
@@ -117,6 +143,7 @@ def main():
     parser.add_argument("--status", required=True, choices=["success", "failed"])
     parser.add_argument("--job-id", default="unknown")
     parser.add_argument("--elapsed", default="unknown")
+    parser.add_argument("--attachment", default=None, help="Path to file to attach (e.g. QC PDF report)")
     args = parser.parse_args()
 
     notif = load_notification_config(args.config)
@@ -135,9 +162,14 @@ def main():
         args.job_id, args.elapsed, node,
     )
 
+    attachment = args.attachment if args.attachment and os.path.exists(args.attachment) else None
+    if args.attachment and not attachment:
+        print(f"[NOTIFY] attachment not found, sending without: {args.attachment}")
+
     if email:
-        if send_one(email, subject, body):
-            print(f"[NOTIFY] email → {email}")
+        if send_one(email, subject, body, attachment):
+            suffix = f" (+{os.path.basename(attachment)})" if attachment else ""
+            print(f"[NOTIFY] email → {email}{suffix}")
 
     if phone:
         send_sms(phone, subject, sms_body)

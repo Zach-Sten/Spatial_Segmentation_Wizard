@@ -135,6 +135,18 @@ def aggregate_and_save(sdata, output_dir: Path, sample_id: str, explorer_mode: s
     adata.write_h5ad(h5ad_path)
     print(f"[INFO] H5AD saved: {h5ad_path}")
 
+    # Export cell boundaries for downstream QC morphological metrics
+    boundary_key = next(
+        (k for k in sdata.shapes if "boundaries" in k and "patch" not in k), None
+    )
+    if boundary_key:
+        try:
+            boundary_path = output_dir / "cell_boundaries.parquet"
+            sdata.shapes[boundary_key].to_parquet(boundary_path)
+            print(f"[INFO] Cell boundaries saved: {boundary_path}")
+        except Exception as e:
+            print(f"[WARN] Could not save cell boundaries: {e}")
+
     # Explorer export
     sopa.io.explorer.write(
         str(output_dir),
