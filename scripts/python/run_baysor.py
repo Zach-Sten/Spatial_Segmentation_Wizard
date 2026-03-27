@@ -87,13 +87,21 @@ def main():
             sopa.segmentation.baysor(sdata, min_area=params.get("min_area", 10))
         except (asyncio.TimeoutError, TimeoutError):
             # Dask worker cleanup times out because Julia/baysor subprocesses are
-            # slow to exit. Patch results are already written to disk — call again
-            # to skip reprocessing and just collect results into sdata.
-            print("[WARN] Dask worker cleanup timed out — patch results intact, collecting...")
+            # slow to exit. Patch results are written to disk as segmentation_counts.loom
+            # BEFORE the timeout fires — so we can resolve directly from disk without
+            # going through the dask distributed backend at all.
+            print("[WARN] Dask worker cleanup timed out — resolving patch results from disk...")
+            min_area = params.get("min_area", 10)
             try:
-                sopa.segmentation.baysor(sdata, min_area=params.get("min_area", 10))
-            except (asyncio.TimeoutError, TimeoutError):
-                print("[WARN] Dask cleanup timed out on collection pass — proceeding to aggregation...")
+                from sopa.segmentation.transcripts import resolve
+            except ImportError:
+                from sopa.segmentation.methods._baysor import resolve
+
+            from sopa.utils import get_transcripts_patches_dirs
+            patches_dirs = get_transcripts_patches_dirs(sdata)
+            print(f"[INFO] Resolving {len(patches_dirs)} patch directories from disk...")
+            resolve(sdata, patches_dirs, min_area=min_area, key_added="baysor_boundaries")
+            print("[INFO] Manual resolve complete — baysor_boundaries added to sdata")
     _run()
 
     aggregate_and_save(
