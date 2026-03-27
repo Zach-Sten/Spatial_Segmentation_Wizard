@@ -1,17 +1,10 @@
-<table border="0" cellpadding="0" cellspacing="0" style="border: none; border-collapse: collapse;">
-<tr style="border: none;">
-<td width="220" valign="middle" style="border: none;">
-  <img src="img/segmentation_wizard_icon.png" width="200">
-</td>
-<td valign="middle" style="border: none;">
+<img src="img/segmentation_wizard_icon.png" width="200" align="left" hspace="20">
 
 # Spatial Segmentation Wizard
 
 An interactive pipeline for running and benchmarking multiple spatial transcriptomics segmentation methods on HPC clusters via SLURM. All methods execute inside a single Singularity container.
 
-</td>
-</tr>
-</table>
+<br clear="left">
 
 ## Overview
 
