@@ -47,17 +47,17 @@ The pipeline wraps multiple segmentation methods behind a single interactive wiz
 pip install pyyaml  # only dependency outside the container
 
 # Interactive wizard — walks you through everything:
-python segmentation_pipeline_master.py
+python segmentation_wizard.py
 
 # Or use an existing config:
-python segmentation_pipeline_master.py --config config/my_config.yaml
+python segmentation_wizard.py --config config/my_config.yaml
 ```
 
 ### Test locally (no HPC needed)
 
 ```bash
 python setup_test_data.py
-python segmentation_pipeline_master.py --config config/test_config.yaml
+python segmentation_wizard.py --config config/test_config.yaml
 ls scripts/slurm/generated/
 ```
 
@@ -80,7 +80,7 @@ QC output per slide:
 ## Architecture
 
 ```
-segmentation_pipeline_master.py      ← interactive wizard
+segmentation_wizard.py      ← interactive wizard
         │
         ▼
 config/*.yaml                        ← saved configurations

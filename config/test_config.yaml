@@ -3,7 +3,7 @@
 # ============================================================================
 # Usage:
 #   1. Run: python setup_test_data.py        (creates fake directory tree)
-#   2. Run: python segmentation_pipeline_master.py --config config/test_config.yaml
+#   2. Run: python segmentation_wizard.py --config config/test_config.yaml
 #   3. Answer 'y' to generate, 'n' to submit
 #   4. Inspect scripts/slurm/generated/ to see what would be submitted
 # ============================================================================

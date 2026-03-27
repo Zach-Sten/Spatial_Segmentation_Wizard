@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-segmentation_pipeline_master.py — Interactive terminal launcher.
+segmentation_wizard.py — Interactive terminal launcher.
 
 Walk through pipeline configuration step by step, preview the config,
 discover samples, review the job plan, and submit — all from one command.
 
 Usage:
-    python segmentation_pipeline_master.py
+    python segmentation_wizard.py
 
     # Or skip the wizard and use an existing config:
-    python segmentation_pipeline_master.py --config config/my_config.yaml
+    python segmentation_wizard.py --config config/my_config.yaml
 """
 
 import os
@@ -215,6 +215,19 @@ def wizard():
 
     cfg = {"data": {}, "paths": {}, "slurm": {"default": {}}, "methods": {}}
 
+    # ── Reference data ──
+    section("Reference Data")
+    print(f"  {DIM}Reference h5ad used for cell type classification.{RESET}")
+    print(f"  {DIM}Leave blank to skip classification.{RESET}\n")
+    ref_path = prompt("Reference h5ad path (blank to skip)", default="", required=False)
+    cfg["data"]["reference_path"] = ref_path
+    if ref_path:
+        cfg["data"]["reference_celltype_col"] = prompt(
+            "Cell type column in reference .obs", default="cell_type"
+        )
+    else:
+        cfg["data"]["reference_celltype_col"] = ""
+
     # ── Data ──
     section("Data")
     cfg["data"]["platform"] = prompt_choice(
@@ -346,11 +359,39 @@ def wizard():
     print()
     if not selected:
         print(f"  {DIM}No segmentation methods selected — QC will run on existing results{RESET}")
-    run_qc = prompt_yn("Run CellSpa QC?", default=True)
+    run_qc = prompt_yn("Run CellSPA QC?", default=True)
     cfg["methods"]["cellspa_qc"] = {
         "enabled": run_qc,
         "slurm": {"mem": "100G", "cpus_per_task": 4, "time": "0-12:00:00"},
         "params": {"methods_to_qc": selected},
+    }
+
+    # Classifier — requires a reference dataset to be set
+    print()
+    run_classifier = False
+    if cfg["data"].get("reference_path"):
+        run_classifier = prompt_yn("Classify cell types?", default=False)
+    else:
+        print(f"  {DIM}Cell type classification skipped — no reference path provided{RESET}")
+    cfg["methods"]["classifier"] = {
+        "enabled": run_classifier,
+        "slurm": {"mem": "100G", "cpus_per_task": 8, "gpu": False, "time": "0-06:00:00"},
+        "params": {
+            "reference_path":      cfg["data"].get("reference_path", ""),
+            "reference_celltype_col": cfg["data"].get("reference_celltype_col", "cell_type"),
+        },
+    }
+
+    # Cell type specific QC — placeholder until segger integration is complete
+    run_celltype_qc = False
+    if run_classifier:
+        run_celltype_qc = prompt_yn("Run cell type specific QC?", default=False)
+        if run_celltype_qc:
+            print(f"  {DIM}(Placeholder — segger figures and cell-type QC metrics coming soon){RESET}")
+    cfg["methods"]["celltype_qc"] = {
+        "enabled": run_celltype_qc,
+        "slurm": {"mem": "100G", "cpus_per_task": 4, "time": "0-06:00:00"},
+        "params": {},
     }
 
     # ── SLURM defaults (edit the saved YAML for custom partition/account) ──
@@ -384,6 +425,12 @@ def print_config_review(cfg):
     elif data.get("sample_dir"):
         print(f"  {BOLD}Data mode:{RESET}   single sample")
         print(f"  {BOLD}Path:{RESET}        {data['sample_dir']}")
+
+    if data.get("reference_path"):
+        print(f"  {BOLD}Reference:{RESET}   {data['reference_path']}")
+        print(f"  {BOLD}Celltype col:{RESET} {data.get('reference_celltype_col', 'cell_type')}")
+    else:
+        print(f"  {BOLD}Reference:{RESET}   {DIM}(none — classification disabled){RESET}")
 
     if data.get("exclude"):
         print(f"  {BOLD}Exclude:{RESET}     {', '.join(data['exclude'])}")
@@ -730,12 +777,19 @@ def main():
             for s in ss:
                 print(f"    {ARROW} {s.sample_id}")
 
-        enabled = [m for m, mc in cfg.get("methods", {}).items() if mc.get("enabled") and m != "cellspa_qc"]
-        qc_enabled = cfg.get("methods", {}).get("cellspa_qc", {}).get("enabled", False)
+        skip = {"cellspa_qc", "classifier", "celltype_qc"}
+        enabled = [m for m, mc in cfg.get("methods", {}).items() if mc.get("enabled") and m not in skip]
+        qc_enabled         = cfg.get("methods", {}).get("cellspa_qc",   {}).get("enabled", False)
+        classifier_enabled = cfg.get("methods", {}).get("classifier",   {}).get("enabled", False)
+        celltype_qc_enabled = cfg.get("methods", {}).get("celltype_qc", {}).get("enabled", False)
         method_str = ", ".join(enabled) if enabled else f"{DIM}none{RESET}"
-        qc_str = f" + CellSPA QC" if qc_enabled else ""
+        extra = []
+        if qc_enabled:          extra.append("CellSPA QC")
+        if classifier_enabled:  extra.append("classifier")
+        if celltype_qc_enabled: extra.append("cell type QC")
+        extra_str = (" + " + ", ".join(extra)) if extra else ""
         print(f"\n  {BOLD}Total: {len(samples)} sample(s){RESET}")
-        print(f"  {BOLD}Methods:{RESET} {method_str}{qc_str}\n")
+        print(f"  {BOLD}Methods:{RESET} {method_str}{extra_str}\n")
     except Exception as e:
         print(f"\n  {YELLOW}⚠ Cannot discover samples: {e}{RESET}")
         print(f"  {DIM}Generating scripts anyway (paths will be baked in from config){RESET}\n")
@@ -755,7 +809,7 @@ def main():
     elif action == "g":
         print()
         generate_and_submit(cfg, config_path, do_submit=False)
-        print(f"  {DIM}To submit later: python segmentation_pipeline_master.py --config {config_path}{RESET}\n")
+        print(f"  {DIM}To submit later: python segmentation_wizard.py --config {config_path}{RESET}\n")
     else:
         print()
         generate_and_submit(cfg, config_path, do_submit=True)

@@ -8,7 +8,7 @@ without real data.
 
 Usage:
     python setup_test_data.py
-    python segmentation_pipeline_master.py --config config/test_config.yaml
+    python segmentation_wizard.py --config config/test_config.yaml
 """
 
 from pathlib import Path
@@ -58,6 +58,6 @@ for slide_name, sample_dirs in slides.items():
 print(f"\n  {total_samples} sample(s) across {len(slides)} slide(s)")
 print(f"\nDone! Tree created at: {TEST_ROOT.resolve()}")
 print(f"\nNext steps:")
-print(f"  python segmentation_pipeline_master.py --config config/test_config.yaml")
+print(f"  python segmentation_wizard.py --config config/test_config.yaml")
 print(f"  # or run the interactive wizard:")
-print(f"  python segmentation_pipeline_master.py")
+print(f"  python segmentation_wizard.py")
