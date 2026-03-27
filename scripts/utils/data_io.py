@@ -38,6 +38,7 @@ def configure_threads(cpus: int = None):
     os.environ["OMP_NUM_THREADS"] = str(cpus)
     os.environ["OPENBLAS_NUM_THREADS"] = str(cpus)
     os.environ["MKL_NUM_THREADS"] = str(cpus)
+    os.environ["JULIA_NUM_THREADS"] = str(cpus)
 
     # Suppress noisy-but-harmless warnings in dask worker subprocesses (inherited via env).
     # Append so we don't clobber any pre-existing PYTHONWARNINGS value.

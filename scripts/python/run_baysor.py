@@ -9,7 +9,6 @@ Called by the generated SLURM script with sample-specific paths:
 import os
 import sys
 import time
-import asyncio
 import argparse
 import warnings
 from pathlib import Path
@@ -45,8 +44,6 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     cpus = configure_threads()
-    if params.get("parallelization_backend") == "dask":
-        configure_dask(cpus)
 
     t_start = time.time()
 
@@ -67,8 +64,6 @@ def main():
             pass
 
     import sopa
-    if params.get("parallelization_backend") == "dask":
-        sopa.settings.parallelization_backend = "dask"
 
     prepare_patches(
         sdata,
@@ -79,16 +74,11 @@ def main():
     )
 
     n_tiles = len(sdata.shapes.get("transcripts_patches", []))
-    print(f"[INFO] Running Baysor on {n_tiles} transcript patches...")
+    print(f"[INFO] Running Baysor on {n_tiles} transcript patches (sequential, {cpus} Julia threads each)...")
 
     @timed("Baysor segmentation")
     def _run():
-        try:
-            sopa.segmentation.baysor(sdata, min_area=params.get("min_area", 10))
-        except (asyncio.TimeoutError, TimeoutError):
-            # Cleanup timeout — Julia subprocesses are slow to exit.
-            # Results should already be committed to sdata at this point.
-            print("[WARN] Dask cleanup timed out — proceeding to aggregation...")
+        sopa.segmentation.baysor(sdata, min_area=params.get("min_area", 10))
     _run()
 
     aggregate_and_save(
