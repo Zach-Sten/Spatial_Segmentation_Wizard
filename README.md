@@ -1,9 +1,9 @@
-<table border="0" cellpadding="0" cellspacing="0">
-<tr>
-<td width="220" valign="middle">
+<table border="0" cellpadding="0" cellspacing="0" style="border: none; border-collapse: collapse;">
+<tr style="border: none;">
+<td width="220" valign="middle" style="border: none;">
   <img src="img/segmentation_wizard_icon.png" width="200">
 </td>
-<td valign="middle">
+<td valign="middle" style="border: none;">
 
 # Spatial Segmentation Wizard
 
