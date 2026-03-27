@@ -37,6 +37,11 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Ensure dask workers find the pre-cached CPSAM model (cellpose 4.x)
+    # rather than attempting an internet download on HPC nodes.
+    if "CELLPOSE_LOCAL_MODELS_PATH" not in os.environ:
+        os.environ["CELLPOSE_LOCAL_MODELS_PATH"] = "/opt/cellpose_models"
+
     cpus = configure_threads()
     configure_dask(cpus)
     t_start = time.time()

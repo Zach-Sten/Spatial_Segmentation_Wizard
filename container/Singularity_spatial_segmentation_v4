@@ -131,6 +131,20 @@ From: ubuntu:20.04
   # PDF stitching for QC report guide pages
   $ENV_PIP install pypdf
 
+  # Pre-cache cellpose CPSAM model during build so HPC compute nodes (no outbound
+  # internet) can load it at runtime. cellpose 4.x changed default model to cpsam
+  # (SAM-based) and attempts to download it on first use — this bakes it into the .sif.
+  ENV_PYTHON=/opt/miniforge3/envs/spatial_segmentation_env/bin/python
+  $ENV_PYTHON -c "
+import os
+os.environ['CELLPOSE_LOCAL_MODELS_PATH'] = '/opt/cellpose_models'
+os.makedirs('/opt/cellpose_models', exist_ok=True)
+from cellpose import models
+print('Pre-caching cellpose CPSAM model...')
+models.CellposeModel(pretrained_model='cpsam', gpu=False)
+print('CPSAM model cached OK')
+" || echo "WARNING: cellpose CPSAM pre-cache failed — workers will attempt download at runtime"
+
   # LAST: force setuptools<81 so pkg_resources is available (xarray_schema dep).
   # Must come after all other pip installs in case any of them upgraded setuptools.
   $ENV_PIP install "setuptools<81" --force-reinstall
@@ -247,6 +261,7 @@ BAYSOR_WRAPPER
   echo "export PATH=/opt/baysor/bin:\${PATH}" >> $SINGULARITY_ENVIRONMENT
   echo "export JULIA_DEPOT_PATH=\${HOME}/.julia:/root/.julia" >> $SINGULARITY_ENVIRONMENT
   echo "export PATH=/opt/miniforge3/bin:\${PATH}" >> $SINGULARITY_ENVIRONMENT
+  echo "export CELLPOSE_LOCAL_MODELS_PATH=/opt/cellpose_models" >> $SINGULARITY_ENVIRONMENT
   echo "alias ll='ls -l --color=auto'" >> $SINGULARITY_ENVIRONMENT
   echo "alias ls='ls --color=auto'" >> $SINGULARITY_ENVIRONMENT
 
@@ -270,7 +285,7 @@ BAYSOR_WRAPPER
   python -c "import scanpy; print(f'scanpy:      {scanpy.__version__}')" || echo "FAIL: scanpy"
   python -c "import squidpy; print(f'squidpy:     {squidpy.__version__}')" || echo "FAIL: squidpy"
   python -c "import torch; print(f'PyTorch:     {torch.__version__}  CUDA: {torch.cuda.is_available()}')" || echo "FAIL: torch"
-  python -c "import cellpose; print('cellpose:    OK')" || echo "FAIL: cellpose"
+  python -c "import cellpose; from cellpose import models; m=models.CellposeModel(pretrained_model='cpsam', gpu=False); print(f'cellpose:    {cellpose.__version__} (CPSAM cached OK)')" || echo "FAIL: cellpose or CPSAM model missing"
   python -c "import spatialdata; print(f'spatialdata: {spatialdata.__version__}')" || echo "FAIL: spatialdata"
   python -c "import bidcell; print('bidcell:     OK')" || echo "FAIL: bidcell"
   python -c "import numpy; print(f'numpy:       {numpy.__version__}')" || echo "FAIL: numpy"
