@@ -170,13 +170,15 @@ p_counts <- ggplot(cells_df, aes(x = method, y = total_counts, fill = method)) +
     geom_violin(trim = TRUE) +
     geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
     coord_cartesian(ylim = c(0, quantile(cells_df$total_counts, 0.99, na.rm = TRUE))) +
-    labs(title = "Counts / Cell", x = NULL, y = "Total Counts") + fill_scale + tt
+    labs(title = "Counts / Cell", x = NULL, y = "Total Counts") +
+    fill_scale + tt + theme(aspect.ratio = 1)
 
 p_genes <- ggplot(cells_df, aes(x = method, y = n_genes, fill = method)) +
     geom_violin(trim = TRUE) +
     geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
     coord_cartesian(ylim = c(0, quantile(cells_df$n_genes, 0.99, na.rm = TRUE))) +
-    labs(title = "Genes / Cell", x = NULL, y = "# Genes") + fill_scale + tt
+    labs(title = "Unique Genes / Cell", x = NULL, y = "# Unique Genes") +
+    fill_scale + tt + theme(aspect.ratio = 1)
 
 p_scatter <- ggplot(cells_df, aes(x = total_counts, y = n_genes, color = method)) +
     geom_point(size = 0.3, alpha = 0.2) +
@@ -184,8 +186,8 @@ p_scatter <- ggplot(cells_df, aes(x = total_counts, y = n_genes, color = method)
         xlim = c(0, quantile(cells_df$total_counts, 0.99, na.rm = TRUE)),
         ylim = c(0, quantile(cells_df$n_genes,      0.99, na.rm = TRUE))
     ) +
-    labs(title = "Counts vs Genes", x = "Total Counts", y = "# Genes") +
-    theme_minimal(base_size = 9) +
+    labs(title = "Counts vs Unique Genes", x = "Total Counts", y = "# Unique Genes") +
+    theme_minimal(base_size = 9) + theme(aspect.ratio = 1) +
     color_scale +
     guides(color = guide_legend(override.aes = list(size = 2, alpha = 1), title = NULL))
 
@@ -236,7 +238,7 @@ top_row <- if (!is.null(p_pct) && !is.null(p_no_nucleus)) {
 bottom_row <- p_counts | p_genes | p_scatter
 
 page1 <- (plot_spacer() / top_row / bottom_row / plot_spacer()) +
-    plot_layout(heights = c(0.08, 1, 1.2, 0.08)) +
+    plot_layout(heights = c(0.05, 1, 1, 0.4)) +
     plot_annotation(
         title = sprintf("Segmentation QC Report — %s", sample_id),
         theme = theme(plot.title = element_text(size = 11, face = "bold"))
@@ -264,7 +266,7 @@ if (length(all_morpho) > 0) {
                 labs(title = m, x = NULL, y = NULL) +
                 fill_scale + tt +
                 theme(axis.text.x = element_text(angle = 25, hjust = 1),
-                      aspect.ratio = 0.85)
+                      aspect.ratio = 1.0)
         })
     }
 }
@@ -675,7 +677,7 @@ def generate_qc_plots(adata, method_name: str, output_dir: Path):
     for ax, metric, label in zip(
         axes,
         ["n_genes_by_counts", "total_counts", "pct_counts_in_top_50_genes"],
-        ["Genes per Cell", "Total Counts", "% in Top 50 Genes"],
+        ["Unique Genes per Cell", "Total Counts", "% in Top 50 Genes"],
     ):
         if metric in adata.obs.columns:
             ax.violinplot(adata.obs[metric].values, showmedians=True)
