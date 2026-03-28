@@ -18,6 +18,12 @@ Suggestions for QC elements or methods to add are always welcome!
 
 The pipeline wraps multiple segmentation methods behind a single interactive wizard. Point it at your data, pick your methods, and it generates and submits all SLURM jobs — one per sample per method — with automatic dependency chaining so QC runs after segmentation finishes.
 
+## Comparisons
+
+<p align="center">
+  <img src="img/comparison_1.png" width="300">
+</p>
+
 ## Current Status
 
 **Working:**
