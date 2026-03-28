@@ -356,16 +356,6 @@ def wizard():
         elif method == "fastreseg" and enabled:
             cfg["methods"][method].update(FASTRESEG_DEFAULT)
 
-    print()
-    if not selected:
-        print(f"  {DIM}No segmentation methods selected — QC will run on existing results{RESET}")
-    run_qc = prompt_yn("Run CellSPA QC?", default=True)
-    cfg["methods"]["cellspa_qc"] = {
-        "enabled": run_qc,
-        "slurm": {"mem": "100G", "cpus_per_task": 4, "time": "0-12:00:00"},
-        "params": {"methods_to_qc": selected},
-    }
-
     # Classifier — requires a reference dataset to be set
     print()
     run_classifier = False
@@ -385,14 +375,22 @@ def wizard():
         },
     }
 
-    # Cell type specific QC — placeholder until segger integration is complete
-    run_celltype_qc = False
+    print()
+    if not selected:
+        print(f"  {DIM}No segmentation methods selected — QC will run on existing results{RESET}")
     if run_classifier:
-        run_celltype_qc = prompt_yn("Run cell type specific QC?", default=False)
-        if run_celltype_qc:
-            print(f"  {DIM}(Placeholder — segger figures and cell-type QC metrics coming soon){RESET}")
+        run_qc = True
+        print(f"  {CHECK} CellSPA QC enabled automatically (classifier requires it)")
+    else:
+        run_qc = prompt_yn("Run CellSPA QC?", default=True)
+    cfg["methods"]["cellspa_qc"] = {
+        "enabled": run_qc,
+        "slurm": {"mem": "100G", "cpus_per_task": 4, "time": "0-12:00:00"},
+        "params": {"methods_to_qc": selected},
+    }
+
     cfg["methods"]["celltype_qc"] = {
-        "enabled": run_celltype_qc,
+        "enabled": False,
         "slurm": {"mem": "100G", "cpus_per_task": 4, "time": "0-06:00:00"},
         "params": {},
     }
@@ -645,10 +643,28 @@ def generate_and_submit(cfg, config_path, do_submit=False):
                 else:
                     print(f"    {CHECK} submit_{method}_{sample.sample_id}.sh")
 
-            # Classifier: one job per seg method — each depends on its own seg job
+            # Classifier: one job per seg method — each depends on its own seg job.
+            # If no methods are being submitted now, discover existing reseg results instead.
             classify_ids = []
             if run_classifier:
-                for method in primary:
+                if primary:
+                    methods_to_classify = primary
+                else:
+                    output_base = get_output_base_override(cfg)
+                    base = (Path(output_base) / sample.slide_dir.name
+                            if output_base else sample.slide_dir)
+                    methods_to_classify = [
+                        d.name.replace("_reseg", "")
+                        for d in sorted(base.glob("*_reseg"))
+                        if (d / sample.sample_id / f"{sample.sample_id}.h5ad").exists()
+                    ]
+                    if methods_to_classify:
+                        print(f"    {DIM}Classifier: using existing results for "
+                              f"{', '.join(methods_to_classify)}{RESET}")
+                    else:
+                        print(f"    {YELLOW}⚠ No existing reseg h5ads found — classifier skipped{RESET}")
+
+                for method in methods_to_classify:
                     content = generate_classifier_script(cfg, method, sample, config_path)
                     fname = f"submit_classify_{method}_{sample.sample_id}.sh"
                     spath = out_path / fname
