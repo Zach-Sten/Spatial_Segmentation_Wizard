@@ -1,10 +1,12 @@
 # Spatial Segmentation Wizard
 
-<img src="img/segmentation_wizard_icon.png" width="300" align="left" hspace="20">
+<img src="img/segmentation_wizard_icon.png" width="200" align="left" hspace="20">
 
 An interactive pipeline for running and benchmarking multiple spatial transcriptomics segmentation methods on HPC clusters via SLURM. All methods execute inside a single Singularity container.
 
-We're working on converting this to a docker container and are excited to implement a classifier that builds off of reference data to give quick annotations for downstream QC metrics. Stay tuned for more! ✨🪄💫✨
+We're working on adding in a docker container as well and are excited to implement a classifier that builds off of reference data to give quick annotations for downstream QC metrics. Stay tuned for more! ✨🪄💫✨
+
+Suggestions for QC elements or methods to add are always welcome! 
 
 <br clear="left">
 
