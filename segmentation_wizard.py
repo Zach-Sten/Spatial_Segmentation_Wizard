@@ -168,7 +168,7 @@ def prompt_multi(label, options, defaults=None):
     return selected if selected else defaults
 
 
-def path_prompt(label, default=None, must_exist=False):
+def path_prompt(label, default=None, must_exist=False, required=True):
     """Prompt for a file/directory path with tab completion."""
     try:
         import readline
@@ -188,7 +188,15 @@ def path_prompt(label, default=None, must_exist=False):
         pass  # readline not available on all platforms
 
     while True:
-        val = prompt(label, default=default, required=True)
+        val = prompt(label, default=default, required=required)
+        if not val:
+            # Reset completer and return empty (optional path skipped)
+            try:
+                import readline
+                readline.set_completer(None)
+            except ImportError:
+                pass
+            return ""
         val = os.path.expanduser(val)
         # Resolve to absolute path — critical for SLURM jobs that run on compute nodes
         val = os.path.realpath(val)
@@ -219,7 +227,7 @@ def wizard():
     section("Reference Data")
     print(f"  {DIM}Reference h5ad used for cell type classification.{RESET}")
     print(f"  {DIM}Leave blank to skip classification.{RESET}\n")
-    ref_path = prompt("Reference h5ad path (blank to skip)", default="", required=False)
+    ref_path = path_prompt("Reference h5ad path (blank to skip)", default="", must_exist=False, required=False)
     cfg["data"]["reference_path"] = ref_path
     if ref_path:
         cfg["data"]["reference_celltype_col"] = prompt(
