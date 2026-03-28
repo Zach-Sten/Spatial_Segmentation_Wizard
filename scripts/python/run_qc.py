@@ -806,6 +806,8 @@ def discover_completed_methods(slide_dir: Path, sample_id: str, output_base: str
     found = {}
     for reseg_dir in sorted(base.glob("*_reseg")):
         method = reseg_dir.name.replace("_reseg", "")
+        if method == "xenium_export":
+            continue  # xenium baseline is loaded separately via load_xenium_baseline
         sample_dir = reseg_dir / sample_id
         h5ads = list(sample_dir.glob("*.h5ad")) if sample_dir.exists() else []
         if h5ads:
@@ -919,10 +921,13 @@ def main():
     # Copy annotation CSVs from classifier output into qc_dir so the R report can find them.
     # The classifier writes {sample_id}_predicted_celltypes.csv alongside the h5ad.
     import shutil as _shutil
+    base_dir = Path(output_base) / slide_dir.name if output_base else slide_dir
     for method, (_, output_dir) in method_data.items():
         if method == "xenium":
-            continue  # xenium baseline has no classifier output
-        annot_csv = output_dir / f"{args.sample_id}_predicted_celltypes.csv"
+            # Annotations for xenium baseline come from xenium_export_reseg (not the raw dir)
+            annot_csv = base_dir / "xenium_export_reseg" / args.sample_id / f"{args.sample_id}_predicted_celltypes.csv"
+        else:
+            annot_csv = output_dir / f"{args.sample_id}_predicted_celltypes.csv"
         if annot_csv.exists():
             _shutil.copy(annot_csv, qc_dir / f"annotations_{method}.csv")
             print(f"[INFO] Annotation CSV found for {method}: {annot_csv.name}")

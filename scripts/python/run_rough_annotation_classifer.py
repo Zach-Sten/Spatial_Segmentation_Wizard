@@ -161,37 +161,85 @@ def predict_labels(clf, le, X_query):
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+def _predict_and_save(clf, le, ref_aligned, query_path: Path, output_dir: Path, sample_id: str, method: str):
+    """Load one query h5ad, align genes to the already-subset reference, rank-transform,
+    predict, and save CSV + annotated h5ad. Returns label array for summary printing."""
+    print(f"\n── {method} ──")
+    query = sc.read_h5ad(query_path)
+    print(f"[INFO] {query.n_obs} cells × {query.n_vars} genes")
+
+    # Align query to the same gene set used for reference training
+    common = ref_aligned.var_names.intersection(query.var_names)
+    query = query[:, common].copy()
+    print(f"[INFO] Gene alignment: {len(common)} shared genes")
+
+    X_query = counts_to_rank(query, desc=f"Ranking {method} genes")
+    labels, confidence = predict_labels(clf, le, X_query)
+
+    query.obs["predicted_cell_type"]            = labels
+    query.obs["predicted_cell_type_confidence"] = confidence
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    query.write_h5ad(output_dir / f"{sample_id}_annotated.h5ad")
+    csv_df = query.obs[["predicted_cell_type", "predicted_cell_type_confidence"]].copy()
+    csv_df.index.name = "cell_id"
+    csv_df.to_csv(output_dir / f"{sample_id}_predicted_celltypes.csv")
+    print(f"[INFO] Saved: {output_dir / f'{sample_id}_predicted_celltypes.csv'}")
+
+    counts_series = pd.Series(labels).value_counts()
+    for ct, n in counts_series.items():
+        bar = "█" * int(30 * n / len(labels))
+        print(f"  {ct:<40} {n:>6}  {bar}")
+
+    return labels
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Rank-gene XGBoost cell type classifier"
+        description="Rank-gene XGBoost cell type classifier — trains once, predicts on all methods"
     )
     parser.add_argument("--reference",    required=True,
                         help="Path to reference h5ad with cell type labels")
     parser.add_argument("--celltype-col", required=True,
                         help="Column in reference .obs containing cell type labels")
-    parser.add_argument("--query",        required=True,
-                        help="Path to segmented sample h5ad to annotate")
-    parser.add_argument("--output-dir",   required=True,
-                        help="Directory to write annotated h5ad and CSV")
-    parser.add_argument("--sample-id",    default="",
-                        help="Sample ID used for output file naming")
+    parser.add_argument("--data-dir",     required=True,
+                        help="Root directory to search for *_reseg results "
+                             "(experiment_dir, or slide dir for single-sample mode)")
     parser.add_argument("--gpu",          action="store_true",
                         help="Use GPU for XGBoost (requires CUDA, XGBoost >= 2.0)")
     args = parser.parse_args()
 
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    sample_id = args.sample_id or Path(args.query).stem
+    data_dir = Path(args.data_dir)
+
+    # Discover all reseg h5ads anywhere under data_dir.
+    # Pattern: {anything}*_reseg/{sample_id}/{sample_id}.h5ad
+    # Works for both single-sample and full-experiment layouts.
+    queries = {}  # "{method}/{sample_id}" -> (h5ad_path, output_dir)
+    for reseg_dir in sorted(data_dir.rglob("*_reseg")):
+        if not reseg_dir.is_dir():
+            continue
+        method = reseg_dir.name.replace("_reseg", "")
+        for sample_dir in sorted(reseg_dir.iterdir()):
+            if not sample_dir.is_dir():
+                continue
+            sample_id = sample_dir.name
+            h5ad = sample_dir / f"{sample_id}.h5ad"
+            if h5ad.exists():
+                queries[f"{method}/{sample_id}"] = (h5ad, sample_dir, method, sample_id)
+
+    if not queries:
+        print(f"[ERROR] No *_reseg/**/*.h5ad found under {data_dir}")
+        sys.exit(1)
 
     print("=" * 60)
-    print(f"  Classifier — {sample_id}")
+    print(f"  Classifier — {len(queries)} h5ad(s) discovered")
     print(f"  Reference:  {args.reference}")
-    print(f"  Query:      {args.query}")
-    print(f"  Celltype:   {args.celltype_col}")
-    print(f"  Output:     {output_dir}")
+    print(f"  Data dir:   {data_dir}")
+    for key in queries:
+        print(f"    {key}")
     print("=" * 60)
 
-    # ── Load ──
+    # ── Load reference ──
     print("[INFO] Loading reference data...")
     ref = sc.read_h5ad(args.reference)
     print(f"[INFO]   {ref.n_obs} cells × {ref.n_vars} genes")
@@ -202,60 +250,28 @@ def main():
             f"Available columns: {list(ref.obs.columns)}"
         )
 
-    print("[INFO] Loading query (segmented) data...")
-    query = sc.read_h5ad(args.query)
-    print(f"[INFO]   {query.n_obs} cells × {query.n_vars} genes")
+    # Use the first query to establish the shared Xenium gene panel, then align
+    # reference to it once. All queries share the same Xenium panel so this is valid.
+    first_h5ad = next(iter(queries.values()))[0]
+    first_query = sc.read_h5ad(first_h5ad)
+    ref, _ = align_genes(ref, first_query)
 
-    # ── Align genes — MUST happen before rank transformation ──
-    # The Xenium panel is a small targeted set (~500 genes). The reference may
-    # have 20k+ genes. If we ranked the reference across all its genes first,
-    # rank 5 in reference would mean "5th out of 20,000" while rank 5 in the
-    # Xenium query means "5th out of 500" — incomparable features. By filtering
-    # to the shared gene set first, both reference and query are ranked within
-    # the same Xenium panel universe, making the classifier features directly
-    # comparable.
-    ref, query = align_genes(ref, query)
-
-    # ── Rank transform (within the shared Xenium panel gene set) ──
+    # ── Rank-transform reference and train once ──
     print("[INFO] Rank-transforming reference counts...")
     X_train = counts_to_rank(ref, desc="Ranking reference genes")
-    y_train  = ref.obs[args.celltype_col].astype(str).values
+    y_train = ref.obs[args.celltype_col].astype(str).values
 
-    print("[INFO] Rank-transforming query counts...")
-    X_query = counts_to_rank(query, desc="Ranking query genes")
-
-    # ── Train ──
     clf, le = train_classifier(X_train, y_train, use_gpu=args.gpu)
     print(f"[INFO] Classes ({len(le.classes_)}): {', '.join(le.classes_)}")
 
-    # ── Predict ──
-    print("[INFO] Predicting cell types on query data...")
-    labels, confidence = predict_labels(clf, le, X_query)
+    # ── Predict on every discovered h5ad ──
+    print(f"\n[INFO] Predicting on {len(queries)} h5ad(s)...")
+    total_annotated = 0
+    for key, (h5ad_path, output_dir, method, sample_id) in queries.items():
+        labels = _predict_and_save(clf, le, ref, h5ad_path, output_dir, sample_id, method)
+        total_annotated += len(labels)
 
-    # ── Write back to adata ──
-    query.obs["predicted_cell_type"]            = labels
-    query.obs["predicted_cell_type_confidence"] = confidence
-
-    # ── Save annotated h5ad ──
-    h5ad_path = output_dir / f"{sample_id}_annotated.h5ad"
-    query.write_h5ad(h5ad_path)
-    print(f"[INFO] Annotated h5ad saved: {h5ad_path}")
-
-    # ── Save CSV (for segger / R notebooks) ──
-    csv_df = query.obs[["predicted_cell_type", "predicted_cell_type_confidence"]].copy()
-    csv_df.index.name = "cell_id"
-    csv_path = output_dir / f"{sample_id}_predicted_celltypes.csv"
-    csv_df.to_csv(csv_path)
-    print(f"[INFO] Predicted cell types CSV saved: {csv_path}")
-
-    # ── Distribution summary ──
-    counts_series = pd.Series(labels).value_counts()
-    print(f"\n[INFO] Predicted cell type distribution ({query.n_obs} cells):")
-    for ct, n in counts_series.items():
-        bar = "█" * int(30 * n / len(labels))
-        print(f"  {ct:<40} {n:>6}  {bar}")
-
-    print(f"\n[DONE] {sample_id} — {len(labels)} cells annotated")
+    print(f"\n[DONE] {total_annotated} cells annotated across {len(queries)} h5ad(s)")
 
 
 if __name__ == "__main__":

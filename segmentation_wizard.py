@@ -582,25 +582,54 @@ def generate_and_submit(cfg, config_path, do_submit=False):
         )
         qc_pdf_paths.append(str(qc_dir / "qc_report.pdf"))
 
-    classify_count = len(primary) if run_classifier else 0
-    total = len(samples) * (len(primary) + len(post) + classify_count + (1 if run_qc else 0))
+    classify_count = 1 if run_classifier else 0
+    xenium_export_count = len(samples) if run_classifier else 0
+    total = (len(samples) * (len(primary) + len(post) + (1 if run_qc else 0))
+             + xenium_export_count + classify_count)
 
     section("Job Generation")
     print(f"  {BOLD}{len(samples)}{RESET} sample(s) × {BOLD}{len(primary)}{RESET} method(s)" +
           (f" + {len(post)} post-hoc" if post else "") +
-          (f" + {classify_count} classifier" if run_classifier else "") +
+          (f" + xenium_export + 1 classifier (all samples)" if run_classifier else "") +
           (f" + QC" if run_qc else "") +
           f" = {BOLD}{total}{RESET} jobs\n")
 
     all_scripts = []
     all_job_ids = []
+    all_seg_post_ids = []    # every seg+post ID across all samples (classifier dep)
+    xenium_export_ids = []   # xenium_export job IDs (also fed into classifier dep)
+    qc_scripts = []          # (spath, sample) — submitted after classifier
 
+    # ── Pass 1: seg + post jobs per sample ──
     for slide_name, slide_samples in by_slide.items():
         print(f"  {BOLD}{slide_name}{RESET} ({len(slide_samples)} sample(s))")
 
         for sample in slide_samples:
-            seg_ids = []       # all primary seg job IDs (for post/QC deps)
-            seg_id_map = {}    # method -> job_id (for per-method classifier deps)
+            seg_ids = []
+
+            # ── Xenium export (no dependencies — runs alongside seg jobs) ──
+            if run_classifier:
+                content = generate_slurm_script(cfg, "xenium_export", sample, config_path)
+                fname = f"submit_xenium_export_{sample.sample_id}.sh"
+                spath = out_path / fname
+                with open(spath, "w") as f:
+                    f.write(content)
+                os.chmod(spath, 0o755)
+                all_scripts.append(spath)
+
+                if do_submit:
+                    jid = submit_job(spath)
+                    if jid:
+                        xenium_export_ids.append(jid)
+                        all_job_ids.append(jid)
+                        chain_manifest["jobs"].append(
+                            {"method": "xenium_export", "sample_id": sample.sample_id, "job_id": jid}
+                        )
+                        print(f"    {CHECK} {sample.sample_id}/xenium_export {ARROW} job {jid}")
+                    else:
+                        print(f"    {CROSS} {sample.sample_id}/xenium_export")
+                else:
+                    print(f"    {CHECK} {fname}")
 
             for method in primary:
                 if method not in METHOD_SCRIPTS:
@@ -617,8 +646,8 @@ def generate_and_submit(cfg, config_path, do_submit=False):
                     jid = submit_job(spath)
                     if jid:
                         seg_ids.append(jid)
-                        seg_id_map[method] = jid
                         all_job_ids.append(jid)
+                        all_seg_post_ids.append(jid)
                         chain_manifest["jobs"].append(
                             {"method": method, "sample_id": sample.sample_id, "job_id": jid}
                         )
@@ -628,7 +657,6 @@ def generate_and_submit(cfg, config_path, do_submit=False):
                 else:
                     print(f"    {CHECK} {fname}")
 
-            post_ids = []
             for method in post:
                 if method not in METHOD_SCRIPTS:
                     continue
@@ -642,8 +670,8 @@ def generate_and_submit(cfg, config_path, do_submit=False):
                 if do_submit:
                     jid = submit_job(spath, dependency_ids=seg_ids)
                     if jid:
-                        post_ids.append(jid)
                         all_job_ids.append(jid)
+                        all_seg_post_ids.append(jid)
                         chain_manifest["jobs"].append(
                             {"method": method, "sample_id": sample.sample_id, "job_id": jid}
                         )
@@ -651,52 +679,7 @@ def generate_and_submit(cfg, config_path, do_submit=False):
                 else:
                     print(f"    {CHECK} submit_{method}_{sample.sample_id}.sh")
 
-            # Classifier: one job per seg method — each depends on its own seg job.
-            # If no methods are being submitted now, discover existing reseg results instead.
-            classify_ids = []
-            if run_classifier:
-                if primary:
-                    methods_to_classify = primary
-                else:
-                    output_base = get_output_base_override(cfg)
-                    base = (Path(output_base) / sample.slide_dir.name
-                            if output_base else sample.slide_dir)
-                    methods_to_classify = [
-                        d.name.replace("_reseg", "")
-                        for d in sorted(base.glob("*_reseg"))
-                        if (d / sample.sample_id / f"{sample.sample_id}.h5ad").exists()
-                    ]
-                    if methods_to_classify:
-                        print(f"    {DIM}Classifier: using existing results for "
-                              f"{', '.join(methods_to_classify)}{RESET}")
-                    else:
-                        print(f"    {YELLOW}⚠ No existing reseg h5ads found — classifier skipped{RESET}")
-
-                for method in methods_to_classify:
-                    content = generate_classifier_script(cfg, method, sample, config_path)
-                    fname = f"submit_classify_{method}_{sample.sample_id}.sh"
-                    spath = out_path / fname
-                    with open(spath, "w") as f:
-                        f.write(content)
-                    os.chmod(spath, 0o755)
-                    all_scripts.append(spath)
-
-                    if do_submit:
-                        dep = [seg_id_map[method]] if method in seg_id_map else None
-                        jid = submit_job(spath, dependency_ids=dep)
-                        if jid:
-                            classify_ids.append(jid)
-                            all_job_ids.append(jid)
-                            chain_manifest["jobs"].append(
-                                {"method": f"classify_{method}", "sample_id": sample.sample_id, "job_id": jid}
-                            )
-                            dep_note = f" {DIM}(after {method}){RESET}" if dep else ""
-                            print(f"    {CHECK} {sample.sample_id}/classify_{method} {ARROW} job {jid}{dep_note}")
-                        else:
-                            print(f"    {CROSS} {sample.sample_id}/classify_{method}")
-                    else:
-                        print(f"    {CHECK} {fname}")
-
+            # Generate QC script now; submit after classifier
             if run_qc:
                 content = generate_slurm_script(cfg, "cellspa_qc", sample, config_path)
                 spath = out_path / f"submit_qc_{sample.sample_id}.sh"
@@ -704,19 +687,51 @@ def generate_and_submit(cfg, config_path, do_submit=False):
                     f.write(content)
                 os.chmod(spath, 0o755)
                 all_scripts.append(spath)
-
-                if do_submit:
-                    wait = seg_ids + post_ids + classify_ids
-                    jid = submit_job(spath, dependency_ids=wait if wait else None)
-                    if jid:
-                        all_job_ids.append(jid)
-                        chain_manifest["jobs"].append(
-                            {"method": "cellspa_qc", "sample_id": sample.sample_id, "job_id": jid}
-                        )
-                        print(f"    {CHECK} {sample.sample_id}/qc {ARROW} job {jid} {DIM}(after seg){RESET}")
-                else:
+                qc_scripts.append((spath, sample))
+                if not do_submit:
                     print(f"    {CHECK} submit_qc_{sample.sample_id}.sh")
 
+        print()
+
+    # ── ONE classifier job — trains once, predicts on every *_reseg h5ad found ──
+    classify_id = None
+    if run_classifier:
+        content = generate_classifier_script(cfg, config_path)
+        fname = "submit_classify_all.sh"
+        spath = out_path / fname
+        with open(spath, "w") as f:
+            f.write(content)
+        os.chmod(spath, 0o755)
+        all_scripts.append(spath)
+
+        if do_submit:
+            dep = all_seg_post_ids + xenium_export_ids or None
+            jid = submit_job(spath, dependency_ids=dep)
+            if jid:
+                classify_id = jid
+                all_job_ids.append(jid)
+                chain_manifest["jobs"].append(
+                    {"method": "classifier", "sample_id": "all", "job_id": jid}
+                )
+                dep_note = f" {DIM}(after all seg jobs){RESET}" if dep else ""
+                print(f"  {CHECK} classifier/all {ARROW} job {jid}{dep_note}")
+            else:
+                print(f"  {CROSS} classifier/all")
+        else:
+            print(f"  {CHECK} {fname}")
+        print()
+
+    # ── Pass 2: submit QC jobs (depend on seg + classifier) ──
+    if run_qc and do_submit:
+        wait = all_seg_post_ids + ([classify_id] if classify_id else [])
+        for spath, sample in qc_scripts:
+            jid = submit_job(spath, dependency_ids=wait if wait else None)
+            if jid:
+                all_job_ids.append(jid)
+                chain_manifest["jobs"].append(
+                    {"method": "cellspa_qc", "sample_id": sample.sample_id, "job_id": jid}
+                )
+                print(f"    {CHECK} {sample.sample_id}/qc {ARROW} job {jid} {DIM}(after classifier){RESET}")
         print()
 
     # ── Chain notifications ──

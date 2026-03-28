@@ -160,6 +160,14 @@ methods:
     params:
       methods_to_qc: ["proseg", "baysor", "cellpose"]
 
+  xenium_export:
+    enabled: true
+    slurm:
+      mem: "50G"
+      cpus_per_task: 4
+      time: "0-02:00:00"
+    params: {}
+
   classifier:
     enabled: false
     slurm:

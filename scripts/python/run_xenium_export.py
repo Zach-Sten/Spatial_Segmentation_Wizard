@@ -1,0 +1,85 @@
+"""
+run_xenium_export.py — Export raw Xenium baseline segmentation as h5ad.
+
+Reads the native Xenium output (cell_feature_matrix + cells.csv.gz), attaches
+spatial coordinates, and writes {sample_id}.h5ad to xenium_reseg/{sample_id}/
+so the classifier and QC pipeline treat it like any other segmentation method.
+
+Called by the generated SLURM script:
+    python run_xenium_export.py --config CONFIG --sample-dir /path/to/output-XETG... \
+                                --output-dir /path/to/xenium_reseg/XETG... --sample-id XETG...
+"""
+
+import os
+import sys
+import time
+import argparse
+from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from utils.config_loader import load_config
+from utils.data_io import configure_threads, save_run_metadata
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Export Xenium baseline as h5ad")
+    parser.add_argument("--config",     required=True)
+    parser.add_argument("--sample-dir", required=True,
+                        help="Raw Xenium output-XETG... directory")
+    parser.add_argument("--output-dir", required=True,
+                        help="Destination: xenium_reseg/{sample_id}/")
+    parser.add_argument("--sample-id",  required=True)
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
+    sample_dir = Path(args.sample_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    configure_threads()
+    t_start = time.time()
+
+    print("=" * 60)
+    print(f"  Xenium Export — {args.sample_id}")
+    print(f"  Input:  {sample_dir}")
+    print(f"  Output: {output_dir}")
+    print("=" * 60)
+
+    from spatialdata_io import xenium
+    import pandas as pd
+
+    print("[INFO] Loading Xenium spatialdata...")
+    sdata = xenium(str(sample_dir), cells_as_circles=True)
+    adata = sdata["table"]
+    print(f"[INFO] Loaded: {adata.n_obs} cells × {adata.n_vars} genes")
+
+    # Attach full cells metadata and spatial coordinates from cells.csv.gz
+    for cells_file in [sample_dir / "cells.csv.gz", sample_dir / "cells.csv"]:
+        if cells_file.exists():
+            df = pd.read_csv(cells_file)
+            id_col = next((c for c in ["cell_id", "barcode"] if c in df.columns), None)
+            if id_col:
+                df = df.set_index(id_col)
+            # Align to adata obs order
+            df = df.reindex(adata.obs_names)
+            adata.obs = df.copy()
+
+            xy = [c for c in ["x_centroid", "y_centroid"] if c in df.columns]
+            if len(xy) == 2:
+                adata.obsm["spatial"] = df[xy].to_numpy()
+                print(f"[INFO] Spatial coordinates attached from {cells_file.name}")
+            break
+
+    h5ad_path = output_dir / f"{args.sample_id}.h5ad"
+    adata.write_h5ad(h5ad_path)
+    print(f"[INFO] Saved: {h5ad_path}")
+
+    elapsed = time.time() - t_start
+    method_cfg = cfg.get("methods", {}).get("xenium_export", {})
+    save_run_metadata(output_dir, "xenium_export", method_cfg, elapsed)
+    print(f"[DONE] Xenium export — {args.sample_id} — {elapsed / 60:.1f} min")
+
+
+if __name__ == "__main__":
+    main()

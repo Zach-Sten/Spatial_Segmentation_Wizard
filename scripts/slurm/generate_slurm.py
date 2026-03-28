@@ -26,13 +26,14 @@ from utils.config_loader import (
 
 # Method → Python script path (relative to project root)
 METHOD_SCRIPTS = {
-    "proseg":     "scripts/python/run_proseg.py",
-    "baysor":     "scripts/python/run_baysor.py",
-    "cellpose":   "scripts/python/run_cellpose.py",
-    "bidcell":    "scripts/python/run_bidcell.py",
-    "fastreseg":  "scripts/python/run_fastreseg.py",
-    "cellspa_qc": "scripts/python/run_qc.py",
-    "classifier": "scripts/python/run_rough_annotation_classifer.py",
+    "proseg":        "scripts/python/run_proseg.py",
+    "baysor":        "scripts/python/run_baysor.py",
+    "cellpose":      "scripts/python/run_cellpose.py",
+    "bidcell":       "scripts/python/run_bidcell.py",
+    "fastreseg":     "scripts/python/run_fastreseg.py",
+    "xenium_export": "scripts/python/run_xenium_export.py",
+    "cellspa_qc":    "scripts/python/run_qc.py",
+    "classifier":    "scripts/python/run_rough_annotation_classifer.py",
 }
 
 
@@ -167,28 +168,32 @@ def generate_slurm_script(
 
 def generate_classifier_script(
     cfg: dict,
-    source_method: str,
-    sample: SampleInfo,
     config_path: str,
 ) -> str:
-    """Generate SLURM script for the classifier on one segmentation method's output.
-
-    The classifier runs once per (seg_method, sample), annotating that method's h5ad.
-    Output (annotated h5ad + CSV) is written into the same method output dir so
-    the QC script can discover it alongside the original h5ad.
+    """Generate ONE SLURM script that trains the classifier once on the reference
+    and predicts on every *_reseg/**/*.h5ad found under data_dir — covering all
+    samples and all slides in a single job.
     """
     method_cfg = get_method_config(cfg, "classifier")
     slurm = method_cfg["slurm"]
     container = get_container_path(cfg)
     output_base = get_output_base_override(cfg)
 
-    source_output_dir = sample.output_dir(source_method, output_base)
-    h5ad_path = source_output_dir / f"{sample.sample_id}.h5ad"
+    # data_dir: root under which all *_reseg results live
+    data = cfg.get("data", {})
+    if output_base:
+        data_dir = output_base
+    elif data.get("experiment_dir"):
+        data_dir = data["experiment_dir"]
+    else:
+        # single sample mode: parent slide dir holds the *_reseg dirs
+        data_dir = str(Path(data["sample_dir"]).parent)
 
     pipeline_root = str(Path(config_path).resolve().parent.parent)
-    log_dir = sample.log_dir_in_pipeline(pipeline_root)
+    log_dir = Path(pipeline_root) / "logs" / "classifier"
+    log_dir.mkdir(parents=True, exist_ok=True)
 
-    job_name = f"seg_classify_{source_method}_{sample.sample_id}"
+    job_name = "seg_classify_all"
     python_script = METHOD_SCRIPTS["classifier"]
 
     lines = [
@@ -210,19 +215,18 @@ def generate_classifier_script(
     if slurm.get("account"):
         lines.append(f"#SBATCH --account={slurm['account']}")
 
+    ref_path = method_cfg["params"].get("reference_path", "")
     bind_paths = set()
-    bind_paths.add(str(source_output_dir))
+    bind_paths.add(str(data_dir))
     bind_paths.add(str(log_dir))
     bind_paths.add(str(Path(config_path).resolve().parent))
     bind_paths.add(pipeline_root)
-    ref_path = method_cfg["params"].get("reference_path", "")
     if ref_path:
         bind_paths.add(str(Path(ref_path).parent))
     bind_flag = " ".join(f"--bind {p}" for p in sorted(bind_paths))
 
     nv_flag = "--nv " if slurm.get("gpu", False) else ""
     python_bin = "/opt/miniforge3/envs/spatial_segmentation_env/bin/python"
-
     celltype_col = method_cfg["params"].get("reference_celltype_col", "cell_type")
     gpu_flag = " --gpu" if slurm.get("gpu", False) else ""
 
@@ -230,25 +234,22 @@ def generate_classifier_script(
         f"    {python_bin} {python_script} "
         f"--reference {ref_path} "
         f"--celltype-col {celltype_col} "
-        f"--query {h5ad_path} "
-        f"--output-dir {source_output_dir} "
-        f"--sample-id {sample.sample_id}"
+        f"--data-dir {data_dir}"
         f"{gpu_flag}"
     )
 
     lines += [
         "",
-        f"# CLASSIFIER ({source_method}) — {sample.sample_id}",
-        f"# Slide: {sample.slide_name}",
-        f"# Source: {source_output_dir}",
+        f"# CLASSIFIER — all samples under {data_dir}",
+        f"# Trains once on reference, predicts on every *_reseg h5ad found at runtime",
         "",
         f"mkdir -p {log_dir}",
         "",
         f"cd {pipeline_root}",
         "",
         "echo '============================================'",
-        f"echo '  CLASSIFIER ({source_method}) — {sample.sample_id}'",
-        f"echo '  Slide: {sample.slide_name}'",
+        f"echo '  CLASSIFIER — all samples'",
+        f"echo '  Data dir: {data_dir}'",
         "echo \"  Job: $SLURM_JOB_ID  Node: $(hostname)\"",
         "echo \"  Start: $(date)\"",
         "echo '============================================'",
