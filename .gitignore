@@ -7,6 +7,9 @@ config/pipeline_*_2*.yaml
 # Runtime outputs
 segmentation_results/
 
+# Notebooks (kept local, not tracked)
+notebooks/
+
 # Python
 __pycache__/
 *.pyc
