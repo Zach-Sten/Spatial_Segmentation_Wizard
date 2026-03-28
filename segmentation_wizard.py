@@ -382,6 +382,11 @@ def wizard():
             "reference_celltype_col": cfg["data"].get("reference_celltype_col", "cell_type"),
         },
     }
+    cfg["methods"]["xenium_export"] = {
+        "enabled": run_classifier,
+        "slurm": {"mem": "50G", "cpus_per_task": 4, "time": "0-02:00:00"},
+        "params": {},
+    }
 
     print()
     if not selected:
