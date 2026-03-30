@@ -38,6 +38,9 @@ from sklearn.metrics import classification_report, balanced_accuracy_score
 from sklearn.utils.class_weight import compute_sample_weight
 import xgboost as xgb
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from segger_functions.metrics import find_markers, find_mutually_exclusive_genes
+
 warnings.filterwarnings("ignore")
 
 
@@ -152,6 +155,30 @@ def save_classifier_cache(cache_dir: Path, clf, le, gene_list):
         pickle.dump(le, f)
     (cache_dir / "gene_list.txt").write_text("\n".join(gene_list))
     print(f"[INFO] Classifier cached: {cache_dir}")
+
+
+def save_marker_cache(cache_dir: Path, markers: dict, gene_pairs: list):
+    """Save segger markers and gene_pairs to cache_dir."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    with open(cache_dir / "markers.pkl", "wb") as f:
+        pickle.dump(markers, f)
+    with open(cache_dir / "gene_pairs.pkl", "wb") as f:
+        pickle.dump(gene_pairs, f)
+    print(f"[INFO] Marker cache saved: {len(markers)} cell types, {len(gene_pairs)} gene pairs")
+
+
+def load_marker_cache(cache_dir: Path):
+    """Load markers and gene_pairs from cache_dir. Returns (None, None) if not found."""
+    m_path  = cache_dir / "markers.pkl"
+    gp_path = cache_dir / "gene_pairs.pkl"
+    if not (m_path.exists() and gp_path.exists()):
+        return None, None
+    with open(m_path, "rb") as f:
+        markers = pickle.load(f)
+    with open(gp_path, "rb") as f:
+        gene_pairs = pickle.load(f)
+    print(f"[INFO] Loaded marker cache: {len(markers)} cell types, {len(gene_pairs)} gene pairs")
+    return markers, gene_pairs
 
 
 def load_classifier_cache(cache_dir: Path):
@@ -315,8 +342,30 @@ def main():
         print(f"[INFO] Classes ({len(le.classes_)}): {', '.join(le.classes_)}")
 
         save_classifier_cache(cache_dir, clf, le, gene_list)
+
+        # ── Compute and cache segger markers + gene pairs from reference ──
+        print("[INFO] Computing segger markers from reference...")
+        try:
+            markers = find_markers(ref, args.celltype_col)
+            gene_pairs = find_mutually_exclusive_genes(ref, markers, args.celltype_col)
+            save_marker_cache(cache_dir, markers, gene_pairs)
+        except Exception as e:
+            print(f"[WARN] Could not compute segger markers: {e}")
     else:
         print(f"[INFO] Classes ({len(le.classes_)}): {', '.join(le.classes_)}")
+
+        # ── Load or compute marker cache alongside loaded classifier ──
+        markers, gene_pairs = load_marker_cache(cache_dir)
+        if markers is None:
+            print("[INFO] Marker cache missing — computing from reference...")
+            try:
+                ref = sc.read_h5ad(args.reference)
+                if args.celltype_col in ref.obs.columns:
+                    markers = find_markers(ref, args.celltype_col)
+                    gene_pairs = find_mutually_exclusive_genes(ref, markers, args.celltype_col)
+                    save_marker_cache(cache_dir, markers, gene_pairs)
+            except Exception as e:
+                print(f"[WARN] Could not compute segger markers: {e}")
 
     # ── Predict on every discovered h5ad ──
     print(f"\n[INFO] Predicting on {len(queries)} h5ad(s)...")
