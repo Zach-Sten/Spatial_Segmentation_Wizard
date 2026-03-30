@@ -92,15 +92,17 @@ if (packageVersion("data.table") >= "1.15.0") {
     cat("[INFO] Applying FastReseg/data.table compatibility patch...\n")
     ns        <- getNamespace("FastReseg")
     n_patched <- 0L
-    # Pattern: by = <word ending in coln or colns> not already wrapped in eval()
-    pat_old <- "by\\s*=\\s*([a-zA-Z_][a-zA-Z0-9_]*col[ns]?\\b)(?!\\s*\\))"
+    # Match: by = <variable ending in coln or colns> — e.g. cellID_coln, spatLocs_colns
+    # colns? matches both "coln" (singular) and "colns" (plural, e.g. spatLocs_colns)
+    # No negative lookahead: the regex won't match "eval" since it doesn't end in colns?
+    # No "already has eval" guard: gsub is safe to run on partially-patched functions
+    pat_old <- "by\\s*=\\s*([a-zA-Z_][a-zA-Z0-9_]*colns?\\b)"
     pat_new <- "by = eval(\\1)"
     for (fn_name in ls(ns, all.names = TRUE)) {
         obj <- tryCatch(get(fn_name, envir = ns), error = function(e) NULL)
         if (!is.function(obj)) next
         src_text <- paste(deparse(body(obj)), collapse = "\n")
-        if (!grepl("by\\s*=\\s*eval\\(", src_text) &&
-            grepl(pat_old, src_text, perl = TRUE)) {
+        if (grepl(pat_old, src_text, perl = TRUE)) {
             new_text <- gsub(pat_old, pat_new, src_text, perl = TRUE)
             tryCatch({
                 body(obj) <- parse(text = new_text)[[1]]
