@@ -344,7 +344,7 @@ def wizard():
     # Ask FastReseg source method if selected
     fastreseg_source = "xenium"
     if "fastreseg" in selected:
-        available_sources = ["xenium"] + [m for m in selected if m != "fastreseg"]
+        available_sources = ["xenium", "proseg", "baysor", "cellpose", "bidcell"]
         print()
         print(f"  {BOLD}FastReseg{RESET} — which segmentation to refine?")
         for i, src in enumerate(available_sources, 1):
