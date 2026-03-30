@@ -389,12 +389,30 @@ def wizard():
                 _data_dir = Path(_exp_dir)
             else:
                 _data_dir = Path(_smp_dir).parent
-            _cache = _data_dir / "classifier_cache" / "model.json"
+            _cache      = _data_dir / "classifier_cache" / "model.json"
+            _cache_info = _data_dir / "classifier_cache" / "cache_info.json"
+            _ref_path   = cfg["data"].get("reference_path", "")
+            _ref_col    = cfg["data"].get("reference_celltype_col", "cell_type")
+            _cache_matches = False
             if _cache.exists():
+                if _cache_info.exists() and _ref_path:
+                    import json as _json
+                    _meta = _json.loads(_cache_info.read_text())
+                    _cached_ref = _meta.get("reference_path", "")
+                    _cached_col = _meta.get("celltype_col", "")
+                    _cache_matches = (
+                        _cached_ref == str(Path(_ref_path).resolve()) and
+                        _cached_col == _ref_col
+                    )
+                else:
+                    _cache_matches = True  # no metadata — assume compatible (legacy cache)
+            if _cache_matches:
                 print(f"  {CHECK} Cached model found: {_cache.parent}")
                 classifier_retrain = not prompt_yn("Use cached model?", default=True)
                 if classifier_retrain:
                     print(f"  {DIM}Will retrain from scratch{RESET}")
+            elif _cache.exists():
+                print(f"  {DIM}Cache exists but was trained on a different reference — will retrain{RESET}")
             classifier_gpu = prompt_yn("Use GPU for classifier (XGBoost)?", default=False)
     else:
         print(f"  {DIM}Cell type classification skipped — no reference path provided{RESET}")

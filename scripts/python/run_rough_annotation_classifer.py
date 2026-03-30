@@ -147,13 +147,20 @@ def train_classifier(X_train, y_train, use_gpu=False):
     return clf, le
 
 
-def save_classifier_cache(cache_dir: Path, clf, le, gene_list):
-    """Save model, label encoder, and gene list to cache_dir."""
+def save_classifier_cache(cache_dir: Path, clf, le, gene_list,
+                          reference_path: str = "", celltype_col: str = ""):
+    """Save model, label encoder, gene list, and reference metadata to cache_dir."""
+    import json
     cache_dir.mkdir(parents=True, exist_ok=True)
     clf.save_model(str(cache_dir / "model.json"))
     with open(cache_dir / "label_encoder.pkl", "wb") as f:
         pickle.dump(le, f)
     (cache_dir / "gene_list.txt").write_text("\n".join(gene_list))
+    meta = {
+        "reference_path": str(Path(reference_path).resolve()) if reference_path else "",
+        "celltype_col":   celltype_col,
+    }
+    (cache_dir / "cache_info.json").write_text(json.dumps(meta, indent=2))
     print(f"[INFO] Classifier cached: {cache_dir}")
 
 
@@ -181,13 +188,29 @@ def load_marker_cache(cache_dir: Path):
     return markers, gene_pairs
 
 
-def load_classifier_cache(cache_dir: Path):
-    """Load model, label encoder, and gene list from cache_dir. Returns None if not found."""
+def load_classifier_cache(cache_dir: Path,
+                          reference_path: str = "", celltype_col: str = ""):
+    """Load model from cache_dir; returns None if not found or reference has changed."""
+    import json
     model_path = cache_dir / "model.json"
     le_path    = cache_dir / "label_encoder.pkl"
     gene_path  = cache_dir / "gene_list.txt"
     if not all(p.exists() for p in [model_path, le_path, gene_path]):
         return None, None, None
+
+    # Validate that the cache was built from the same reference + cell type column
+    info_path = cache_dir / "cache_info.json"
+    if info_path.exists() and reference_path:
+        meta = json.loads(info_path.read_text())
+        cached_ref = meta.get("reference_path", "")
+        cached_col = meta.get("celltype_col", "")
+        current_ref = str(Path(reference_path).resolve())
+        if cached_ref != current_ref or (celltype_col and cached_col != celltype_col):
+            print(f"[INFO] Cache reference mismatch — retraining.")
+            print(f"[INFO]   cached:  {cached_ref}  col={cached_col}")
+            print(f"[INFO]   current: {current_ref}  col={celltype_col}")
+            return None, None, None
+
     clf = xgb.XGBClassifier()
     clf.load_model(str(model_path))
     with open(le_path, "rb") as f:
@@ -306,7 +329,9 @@ def main():
     cache_dir = data_dir / "classifier_cache"
 
     # ── Try loading cached classifier ──
-    clf, le, gene_list = (None, None, None) if args.retrain else load_classifier_cache(cache_dir)
+    clf, le, gene_list = (None, None, None) if args.retrain else load_classifier_cache(
+        cache_dir, reference_path=args.reference, celltype_col=args.celltype_col
+    )
 
     if clf is None:
         # ── Load reference and train ──
@@ -341,7 +366,8 @@ def main():
         gene_list = list(ref.var_names)
         print(f"[INFO] Classes ({len(le.classes_)}): {', '.join(le.classes_)}")
 
-        save_classifier_cache(cache_dir, clf, le, gene_list)
+        save_classifier_cache(cache_dir, clf, le, gene_list,
+                              reference_path=args.reference, celltype_col=args.celltype_col)
 
         # ── Compute and cache segger markers + gene pairs from reference ──
         print("[INFO] Computing segger markers from reference...")
