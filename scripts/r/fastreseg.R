@@ -89,9 +89,23 @@ cat(sprintf("[INFO] data.table version: %s\n", as.character(packageVersion("data
 cat(sprintf("[INFO] FastReseg version:  %s\n", as.character(packageVersion("FastReseg"))))
 
 if (packageVersion("data.table") >= "1.15.0") {
+    ns <- getNamespace("FastReseg")
+
+    # ── Diagnostic: print every by= occurrence across all FastReseg functions ──
+    cat("[DEBUG] Scanning FastReseg functions for by= calls...\n")
+    for (fn_name in ls(ns, all.names = TRUE)) {
+        obj <- tryCatch(get(fn_name, envir = ns), error = function(e) NULL)
+        if (!is.function(obj)) next
+        src_lines <- deparse(body(obj))
+        by_lines  <- grep("by\\s*=", src_lines, value = TRUE)
+        for (l in by_lines) {
+            cat(sprintf("[BY]  %s:  %s\n", fn_name, trimws(l)))
+        }
+    }
+
     cat("[INFO] Applying FastReseg/data.table compatibility patch...\n")
 
-    # Recursively walk a call tree; wrap bare by=<xyzColn/xyzColns> in c()
+    # Walk AST; fix any by= that is not already c()/key()/.()/NULL/literal
     fix_by_calls <- function(x) {
         if (!is.call(x)) return(x)
         nms <- names(x)
@@ -99,9 +113,15 @@ if (packageVersion("data.table") >= "1.15.0") {
             nm  <- if (!is.null(nms) && i <= length(nms)) nms[[i]] else ""
             val <- tryCatch(x[[i]], error = function(e) NULL)
             if (is.null(val)) next
-            if (!is.na(nm) && nm == "by" &&
-                is.symbol(val) && grepl("colns?$", as.character(val))) {
-                x[[i]] <- call("c", val)
+            if (!is.na(nm) && nm == "by") {
+                # Skip if already a safe form
+                already_ok <- is.null(val) || is.character(val) || is.numeric(val) ||
+                    (is.call(val) && as.character(val[[1]]) %in% c("c", "key", ".", "list"))
+                if (!already_ok) {
+                    cat(sprintf("[PATCH-DETAIL] by= class=%s deparse=%s\n",
+                                class(val), deparse(val)[1]))
+                    x[[i]] <- call("c", val)
+                }
             } else {
                 x[[i]] <- fix_by_calls(val)
             }
@@ -109,7 +129,6 @@ if (packageVersion("data.table") >= "1.15.0") {
         x
     }
 
-    ns        <- getNamespace("FastReseg")
     n_patched <- 0L
     for (fn_name in ls(ns, all.names = TRUE)) {
         obj <- tryCatch(get(fn_name, envir = ns), error = function(e) NULL)
