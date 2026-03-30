@@ -64,7 +64,7 @@ cat(sprintf("[INFO] %d transcripts, %d unique genes\n",
 # ── Load reference profiles (genes × cell types) ──────────────────────────────
 refProfiles <- NULL
 if (!is.null(ref_profiles_csv) && file.exists(ref_profiles_csv)) {
-    cat("[INFO] Loading ref profiles:", ref_profiles_csv, "\n")
+    cat("[INFO] Loading ref profiles:\n", ref_profiles_csv, "\n")
     ref_df      <- read.csv(ref_profiles_csv, row.names = 1, check.names = FALSE)
     refProfiles <- as.matrix(ref_df)
     cat(sprintf("[INFO] refProfiles: %d genes × %d cell types\n",
@@ -82,36 +82,46 @@ counts_mat <- counts_mat[, common_genes, drop = FALSE]
 cat(sprintf("[INFO] Common genes after subsetting: %d\n", length(common_genes)))
 
 # ── Compatibility patch: FastReseg + data.table >= 1.15.0 ─────────────────────
-# data.table >= 1.15.0 no longer accepts `by = variable` where variable holds
-# column name(s) — it must be `by = eval(variable)`. FastReseg 1.1.1 uses the
-# old pattern throughout. Patch every affected function at runtime.
+# data.table >= 1.15.0 requires explicit c() around character variables in by=.
+# FastReseg 1.1.1 uses bare variable names (e.g. by = cellID_coln) throughout.
+# This patch walks each function's AST directly and wraps the offending symbols.
 cat(sprintf("[INFO] data.table version: %s\n", as.character(packageVersion("data.table"))))
 cat(sprintf("[INFO] FastReseg version:  %s\n", as.character(packageVersion("FastReseg"))))
 
 if (packageVersion("data.table") >= "1.15.0") {
     cat("[INFO] Applying FastReseg/data.table compatibility patch...\n")
+
+    # Recursively walk a call tree; wrap bare by=<xyzColn/xyzColns> in c()
+    fix_by_calls <- function(x) {
+        if (!is.call(x)) return(x)
+        nms <- names(x)
+        for (i in seq_along(x)) {
+            nm  <- if (!is.null(nms) && i <= length(nms)) nms[[i]] else ""
+            val <- tryCatch(x[[i]], error = function(e) NULL)
+            if (is.null(val)) next
+            if (!is.na(nm) && nm == "by" &&
+                is.symbol(val) && grepl("colns?$", as.character(val))) {
+                x[[i]] <- call("c", val)
+            } else {
+                x[[i]] <- fix_by_calls(val)
+            }
+        }
+        x
+    }
+
     ns        <- getNamespace("FastReseg")
     n_patched <- 0L
-    # Match: by = <variable ending in coln or colns> — e.g. cellID_coln, spatLocs_colns
-    # colns? matches both "coln" (singular) and "colns" (plural, e.g. spatLocs_colns)
-    # No negative lookahead: the regex won't match "eval" since it doesn't end in colns?
-    # No "already has eval" guard: gsub is safe to run on partially-patched functions
-    # data.table 1.15+ requires explicit c() around character variables in by=
-    # e.g. by = cellID_coln  →  by = c(cellID_coln)
-    pat_old <- "by\\s*=\\s*([a-zA-Z_][a-zA-Z0-9_]*colns?\\b)"
-    pat_new <- "by = c(\\1)"
     for (fn_name in ls(ns, all.names = TRUE)) {
         obj <- tryCatch(get(fn_name, envir = ns), error = function(e) NULL)
         if (!is.function(obj)) next
-        src_text <- paste(deparse(body(obj)), collapse = "\n")
-        if (grepl(pat_old, src_text, perl = TRUE)) {
-            new_text <- gsub(pat_old, pat_new, src_text, perl = TRUE)
-            n_hits <- length(gregexpr(pat_old, src_text, perl = TRUE)[[1]])
+        old_body <- body(obj)
+        new_body <- tryCatch(fix_by_calls(old_body), error = function(e) NULL)
+        if (!is.null(new_body) && !identical(old_body, new_body)) {
             tryCatch({
-                body(obj) <- parse(text = new_text)[[1]]
+                body(obj) <- new_body
                 assignInNamespace(fn_name, obj, ns = "FastReseg")
                 n_patched <- n_patched + 1L
-                cat(sprintf("[PATCH] Fixed %d 'by' call(s) in FastReseg::%s\n", n_hits, fn_name))
+                cat(sprintf("[PATCH] Fixed FastReseg::%s\n", fn_name))
             }, error = function(e) {
                 cat(sprintf("[PATCH] Skipped %s: %s\n", fn_name, conditionMessage(e)))
             })
