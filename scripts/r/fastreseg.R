@@ -83,25 +83,35 @@ cat(sprintf("[INFO] Common genes after subsetting: %d\n", length(common_genes)))
 
 # ── Run FastReseg ─────────────────────────────────────────────────────────────
 cat("[INFO] Running fastReseg_full_pipeline()...\n")
+cat(sprintf("[INFO] data.table version: %s\n", as.character(packageVersion("data.table"))))
+cat(sprintf("[INFO] FastReseg version:  %s\n", as.character(packageVersion("FastReseg"))))
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
-result <- fastReseg_full_pipeline(
-    counts               = counts_mat,
-    clust                = clust,
-    refProfiles          = refProfiles,
-    transcript_df        = transcript_df,
-    transID_coln         = "transcript_id",
-    transGene_coln       = "target",
-    cellID_coln          = "CellId",
-    spatLocs_colns       = c("x", "y", "z"),
-    extracellular_cellID = "0",
-    pixel_size           = 1.0,   # Xenium coords already in microns
-    zstep_size           = 1.0,
-    invert_y             = FALSE,
-    path_to_output       = file.path(output_dir, "fastreseg_intermediates"),
-    save_intermediates   = FALSE,
-    return_perCellData   = TRUE,
-    percentCores         = 0.75,
+result <- withCallingHandlers(
+    fastReseg_full_pipeline(
+        counts               = counts_mat,
+        clust                = clust,
+        refProfiles          = refProfiles,
+        transcript_df        = transcript_df,
+        transID_coln         = "transcript_id",
+        transGene_coln       = "target",
+        cellID_coln          = "CellId",
+        spatLocs_colns       = c("x", "y", "z"),
+        extracellular_cellID = "0",
+        pixel_size           = 1.0,   # Xenium coords already in microns
+        zstep_size           = 1.0,
+        invert_y             = FALSE,
+        path_to_output       = file.path(output_dir, "fastreseg_intermediates"),
+        save_intermediates   = FALSE,
+        return_perCellData   = TRUE,
+        percentCores         = 0.75,
+    ),
+    error = function(e) {
+        cat("[ERROR]", conditionMessage(e), "\n")
+        cat("\n[TRACEBACK]\n")
+        cat(paste(capture.output(traceback()), collapse = "\n"), "\n")
+        quit(status = 1)
+    }
 )
 cat("[INFO] FastReseg complete.\n")
 
