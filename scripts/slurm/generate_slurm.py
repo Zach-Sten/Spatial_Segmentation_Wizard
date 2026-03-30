@@ -116,6 +116,11 @@ def generate_slurm_script(
     bind_paths.add(str(Path(config_path).resolve().parent))  # config dir
     bind_paths.add(pipeline_root)                             # pipeline scripts
 
+    if method in ("bidcell", "fastreseg"):
+        ref_path_data = cfg.get("data", {}).get("reference_path", "")
+        if ref_path_data:
+            bind_paths.add(str(Path(ref_path_data).parent))
+
     bind_flag = " ".join(f"--bind {p}" for p in sorted(bind_paths))
 
     # Build the Python command with per-sample args
@@ -130,8 +135,15 @@ def generate_slurm_script(
             f"--sample-dir {sample.sample_dir}"
         )
     elif method == "fastreseg":
-        source_method = method_cfg["params"].get("source_method", "proseg")
-        source_dir = sample.output_dir(source_method, output_base)
+        source_method = method_cfg["params"].get("source_method", "xenium")
+        if source_method == "xenium":
+            source_dir = sample.sample_dir   # refine original 10x segmentation
+        else:
+            source_dir = sample.output_dir(source_method, output_base)
+        ref_path_data = cfg.get("data", {}).get("reference_path", "")
+        ref_col_data  = cfg.get("data", {}).get("reference_celltype_col", "cell_type")
+        ref_args = (f" --reference-path {ref_path_data} --reference-celltype-col {ref_col_data}"
+                    if ref_path_data else "")
         py_args = (
             f"    {python_bin} {python_script} "
             f"--config {config_path} "
@@ -139,6 +151,20 @@ def generate_slurm_script(
             f"--output-dir {output_dir} "
             f"--sample-id {sample.sample_id} "
             f"--source-dir {source_dir}"
+            f"{ref_args}"
+        )
+    elif method == "bidcell":
+        ref_path_data = cfg.get("data", {}).get("reference_path", "")
+        ref_col_data  = cfg.get("data", {}).get("reference_celltype_col", "cell_type")
+        ref_args = (f" --reference-path {ref_path_data} --reference-celltype-col {ref_col_data}"
+                    if ref_path_data else "")
+        py_args = (
+            f"    {python_bin} {python_script} "
+            f"--config {config_path} "
+            f"--sample-dir {sample.sample_dir} "
+            f"--output-dir {output_dir} "
+            f"--sample-id {sample.sample_id}"
+            f"{ref_args}"
         )
     else:
         py_args = (
@@ -215,7 +241,7 @@ def generate_classifier_script(
     if slurm.get("account"):
         lines.append(f"#SBATCH --account={slurm['account']}")
 
-    ref_path = method_cfg["params"].get("reference_path", "")
+    ref_path = cfg.get("data", {}).get("reference_path", "") or method_cfg["params"].get("reference_path", "")
     bind_paths = set()
     bind_paths.add(str(data_dir))
     bind_paths.add(str(log_dir))
@@ -227,7 +253,7 @@ def generate_classifier_script(
 
     nv_flag = "--nv " if slurm.get("gpu", False) else ""
     python_bin = "/opt/miniforge3/envs/spatial_segmentation_env/bin/python"
-    celltype_col = method_cfg["params"].get("reference_celltype_col", "cell_type")
+    celltype_col = cfg.get("data", {}).get("reference_celltype_col", "") or method_cfg["params"].get("reference_celltype_col", "cell_type")
     gpu_flag     = " --gpu"     if slurm.get("gpu", False)                          else ""
     retrain_flag = " --retrain" if method_cfg["params"].get("retrain", False)        else ""
 

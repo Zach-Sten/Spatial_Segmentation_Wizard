@@ -11,11 +11,118 @@ import sys
 import time
 import argparse
 from pathlib import Path
+import numpy as np
+import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.config_loader import load_config, get_method_config
 from utils.data_io import configure_threads, save_run_metadata, timed
+
+
+def get_panel_genes(sample_dir: Path):
+    """Read the spatial gene panel from Xenium features.tsv.gz."""
+    features_gz = sample_dir / "cell_feature_matrix" / "features.tsv.gz"
+    if features_gz.exists():
+        import gzip
+        with gzip.open(features_gz, "rt") as f:
+            genes = [line.strip().split("\t")[1] for line in f if line.strip()]
+        print(f"[INFO] Panel genes from features.tsv.gz: {len(genes)}")
+        return set(genes)
+    # Fallback: read unique genes from transcripts
+    for fname in ["transcripts.parquet", "transcripts.csv.gz"]:
+        p = sample_dir / fname
+        if p.exists():
+            if fname.endswith(".parquet"):
+                import pyarrow.parquet as pq
+                genes = set(pq.read_table(p, columns=["feature_name"])["feature_name"].to_pylist())
+            else:
+                genes = set(pd.read_csv(p, usecols=["feature_name"])["feature_name"].unique())
+            print(f"[INFO] Panel genes from transcripts: {len(genes)}")
+            return genes
+    return None
+
+
+def prepare_bidcell_reference(
+    reference_path: str,
+    celltype_col: str,
+    panel_genes,
+    cache_dir: Path,
+):
+    """Generate fp_ref, fp_pos_markers, fp_neg_markers CSVs for BIDCell.
+
+    - fp_ref: genes × cell_types mean expression matrix (only panel genes)
+    - fp_pos_markers: top-10th-percentile expressed genes per cell type (one column per type)
+    - fp_neg_markers: bottom-10th-percentile expressed genes per cell type
+
+    Files are cached so subsequent runs reuse them without recomputation.
+    Returns (ref_csv, pos_csv, neg_csv) paths.
+    """
+    import scanpy as sc
+    from scipy import sparse
+
+    ref_csv = cache_dir / "sc_ref.csv"
+    pos_csv = cache_dir / "sc_markers_pos.csv"
+    neg_csv = cache_dir / "sc_markers_neg.csv"
+
+    if ref_csv.exists() and pos_csv.exists() and neg_csv.exists():
+        print(f"[INFO] BIDCell reference files found in cache: {cache_dir}")
+        return ref_csv, pos_csv, neg_csv
+
+    print(f"[INFO] Generating BIDCell reference files from: {reference_path}")
+    ref = sc.read_h5ad(reference_path)
+
+    if celltype_col not in ref.obs.columns:
+        raise ValueError(
+            f"Column '{celltype_col}' not found in reference .obs. "
+            f"Available: {list(ref.obs.columns)}"
+        )
+
+    # Subset to spatial panel genes only
+    if panel_genes:
+        common = [g for g in ref.var_names if g in panel_genes]
+        if not common:
+            raise ValueError("No overlap between reference genes and spatial panel genes.")
+        ref = ref[:, common].copy()
+        print(f"[INFO] Reference subset to {len(common)} panel genes")
+
+    X = ref.X.toarray() if sparse.issparse(ref.X) else np.array(ref.X)
+    cell_types = ref.obs[celltype_col].astype(str)
+    sorted_types = sorted(cell_types.unique())
+
+    # Mean expression per cell type → fp_ref
+    means = {}
+    for ct in sorted_types:
+        mask = (cell_types == ct).values
+        means[ct] = X[mask].mean(axis=0)
+
+    ref_df = pd.DataFrame(means, index=ref.var_names)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    ref_df.to_csv(ref_csv)
+    print(f"[INFO] Saved fp_ref: {ref_csv}  ({ref_df.shape[0]} genes × {ref_df.shape[1]} cell types)")
+
+    # Percentile-based pos/neg markers per cell type → fp_pos_markers, fp_neg_markers
+    pos_markers = {}
+    neg_markers = {}
+    for ct, mean_expr in means.items():
+        expressed = mean_expr[mean_expr > 0]
+        if len(expressed) > 0:
+            pos_cut = np.percentile(expressed, 90)
+            pos_markers[ct] = ref.var_names[mean_expr >= pos_cut].tolist()
+        else:
+            pos_markers[ct] = []
+        neg_cut = np.percentile(mean_expr, 10)
+        neg_markers[ct] = ref.var_names[mean_expr <= neg_cut].tolist()
+
+    # Pad to equal length with NaN so pandas writes a rectangular CSV
+    pos_df = pd.DataFrame({ct: pd.Series(genes) for ct, genes in pos_markers.items()})
+    neg_df = pd.DataFrame({ct: pd.Series(genes) for ct, genes in neg_markers.items()})
+    pos_df.to_csv(pos_csv, index=False)
+    neg_df.to_csv(neg_csv, index=False)
+    print(f"[INFO] Saved fp_pos_markers: {pos_csv}")
+    print(f"[INFO] Saved fp_neg_markers: {neg_csv}")
+
+    return ref_csv, pos_csv, neg_csv
 
 
 def main():
@@ -26,6 +133,10 @@ def main():
     parser.add_argument("--sample-id", required=True)
     parser.add_argument("--bidcell-config", default=None,
                         help="Pre-existing BIDCell YAML config (skips generation)")
+    parser.add_argument("--reference-path", default=None,
+                        help="Path to reference h5ad for generating BIDCell reference files")
+    parser.add_argument("--reference-celltype-col", default="cell_type",
+                        help="Column in reference .obs with cell type labels")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -62,6 +173,18 @@ def main():
 
     sample_dir = Path(args.sample_dir)
 
+    # ── Generate reference files if not yet cached ──
+    ref_csv = pos_csv = neg_csv = None
+    if args.reference_path:
+        cache_dir = Path(args.reference_path).parent / "reference_cache"
+        try:
+            panel_genes = get_panel_genes(sample_dir)
+            ref_csv, pos_csv, neg_csv = prepare_bidcell_reference(
+                args.reference_path, args.reference_celltype_col, panel_genes, cache_dir
+            )
+        except Exception as e:
+            print(f"[WARN] Could not prepare BIDCell reference files: {e}")
+
     if args.bidcell_config:
         bidcell_config = Path(args.bidcell_config)
     else:
@@ -86,6 +209,14 @@ def main():
         bc_cfg.setdefault("files", {})["data_dir"] = str(sample_dir)
         for key, fname in PLATFORM_FILES.get(platform, {}).items():
             bc_cfg["files"][key] = str(sample_dir / fname)
+
+        # Patch in reference files if available
+        if ref_csv and ref_csv.exists():
+            bc_cfg["files"]["fp_ref"] = str(ref_csv)
+        if pos_csv and pos_csv.exists():
+            bc_cfg["files"]["fp_pos_markers"] = str(pos_csv)
+        if neg_csv and neg_csv.exists():
+            bc_cfg["files"]["fp_neg_markers"] = str(neg_csv)
 
         with open(bidcell_config, "w") as f:
             _yaml.dump(bc_cfg, f, default_flow_style=False)

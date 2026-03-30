@@ -303,17 +303,7 @@ def wizard():
     # ── Methods ──
     section("Segmentation Methods")
 
-    # BIDCell requires user-provided reference files in references/bidcell/
-    BIDCELL_REF_DIR = Path("references/bidcell")
-    BIDCELL_REF_FILES = ["fp_ref", "fp_pos_markers", "fp_neg_markers"]
-    bidcell_refs = list(BIDCELL_REF_DIR.glob("*.csv")) if BIDCELL_REF_DIR.exists() else []
-    bidcell_available = len(bidcell_refs) >= len(BIDCELL_REF_FILES)
-
-    all_methods = ["proseg", "baysor", "cellpose", "fastreseg"]
-    if bidcell_available:
-        all_methods.insert(3, "bidcell")
-    else:
-        print(f"  {DIM}BIDCell unavailable — place reference CSVs in {BIDCELL_REF_DIR}/ to enable{RESET}\n")
+    all_methods = ["proseg", "baysor", "cellpose", "bidcell", "fastreseg"]
 
     selected = prompt_multi(
         f"Which methods to run? {DIM}(✓ = SOPA-supported){RESET}", all_methods, defaults=["proseg", "baysor", "cellpose"]
@@ -341,11 +331,6 @@ def wizard():
         },
     }
 
-    FASTRESEG_DEFAULT = {
-        "slurm": {"mem": "200G", "cpus_per_task": 4, "time": "1-00:00:00"},
-        "params": {"source_method": "proseg"},
-    }
-
     # Ask GPU/CPU for any selected GPU-capable methods
     GPU_METHODS = {"cellpose", "bidcell"}
     print()
@@ -356,13 +341,35 @@ def wizard():
             if method == "cellpose":
                 METHOD_DEFAULTS[method]["params"]["gpu"] = False
 
+    # Ask FastReseg source method if selected
+    fastreseg_source = "xenium"
+    if "fastreseg" in selected:
+        available_sources = ["xenium"] + [m for m in selected if m != "fastreseg"]
+        print()
+        print(f"  {BOLD}FastReseg{RESET} — which segmentation to refine?")
+        for i, src in enumerate(available_sources, 1):
+            label = "10x Xenium (original)" if src == "xenium" else src
+            default_marker = f"  {DIM}← default{RESET}" if i == 1 else ""
+            print(f"    {i}. {label}{default_marker}")
+        raw = prompt(f"  Choice [1-{len(available_sources)}]", default="1")
+        try:
+            idx = int(raw.strip()) - 1
+            fastreseg_source = available_sources[idx] if 0 <= idx < len(available_sources) else "xenium"
+        except (ValueError, IndexError):
+            fastreseg_source = "xenium"
+        label = "10x Xenium (original)" if fastreseg_source == "xenium" else fastreseg_source
+        print(f"  {CHECK} FastReseg will refine: {BOLD}{label}{RESET}")
+
     for method in all_methods:
         enabled = method in selected
         cfg["methods"][method] = {"enabled": enabled}
         if enabled and method in METHOD_DEFAULTS:
             cfg["methods"][method].update(METHOD_DEFAULTS[method])
         elif method == "fastreseg" and enabled:
-            cfg["methods"][method].update(FASTRESEG_DEFAULT)
+            cfg["methods"][method].update({
+                "slurm": {"mem": "200G", "cpus_per_task": 4, "time": "1-00:00:00"},
+                "params": {"source_method": fastreseg_source},
+            })
 
     # Classifier — requires a reference dataset to be set
     print()
@@ -395,9 +402,7 @@ def wizard():
         "enabled": run_classifier,
         "slurm": {"mem": "100G", "cpus_per_task": 8, "gpu": classifier_gpu, "time": "0-06:00:00"},
         "params": {
-            "reference_path":         cfg["data"].get("reference_path", ""),
-            "reference_celltype_col": cfg["data"].get("reference_celltype_col", "cell_type"),
-            "retrain":                classifier_retrain,
+            "retrain": classifier_retrain,
         },
     }
     cfg["methods"]["xenium_export"] = {
