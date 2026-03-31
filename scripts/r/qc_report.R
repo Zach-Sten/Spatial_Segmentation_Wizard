@@ -245,6 +245,7 @@ if (has_annotations) {
         geom_col(position = "stack", width = 0.65) +
         scale_fill_manual(values = ditto_colors) +
         labs(title = "Cell Type Composition (%)", x = NULL, y = "% Cells", fill = "Cell Type") +
+        guides(fill = guide_legend(ncol = 1)) +
         theme_minimal(base_size = 9) +
         theme(plot.title      = element_text(size = 9, face = "bold"),
               legend.text     = element_text(size = 7),
@@ -412,6 +413,7 @@ if (has_segger) {
             p_heatmap <- ggplot(mat_long, aes(x = target, y = source, fill = contamination)) +
                 geom_tile(color = "white", linewidth = 0.2) +
                 scale_fill_gradient(low = "white", high = "#D55E00", name = "Contam.") +
+                coord_fixed(ratio = 1) +
                 labs(title = sprintf("Contamination — %s", method), x = NULL, y = NULL) +
                 theme_minimal(base_size = 5) +
                 theme(axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 4),
@@ -516,11 +518,11 @@ if (has_segger) {
     segger_page_pdf <- sub("\\.pdf$", "_segger.pdf", celltype_page_pdf)
     pdf(segger_page_pdf, width = 11, height = 8.5)
 
-    # Heatmaps — 4 per row on landscape pages
+    # Heatmaps — 3 per row on landscape pages
     if (length(heatmap_keys) > 0) {
-        for (i in seq(1, length(heatmap_keys), by = 4)) {
-            chunk <- heatmap_keys[i:min(i + 3, length(heatmap_keys))]
-            p_row <- wrap_plots(segger_plots[chunk], ncol = 4)
+        for (i in seq(1, length(heatmap_keys), by = 3)) {
+            chunk <- heatmap_keys[i:min(i + 2, length(heatmap_keys))]
+            p_row <- wrap_plots(segger_plots[chunk], ncol = 3)
             print(p_row)
         }
     }

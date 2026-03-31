@@ -1104,22 +1104,26 @@ def main():
             for col in ["predicted_cell_type", "predicted_cell_type_confidence"]:
                 if col in annot_df.columns:
                     adata.obs[col] = annot_df[col].reindex(adata.obs.index)
-            # Xenium: sopa uses 0-indexed IDs; cell_feature_matrix uses 1-indexed.
-            # If the merge gave no matches, try shifting annotation IDs by +1.
+            # Xenium: diagnose and fix cell ID mismatch between baseline and annotation CSV
             if method == "xenium":
                 valid_frac = adata.obs.get("predicted_cell_type", pd.Series(dtype=str)).notna().mean()
                 if valid_frac < 0.05:
-                    try:
-                        shifted = annot_df.copy()
-                        shifted.index = (shifted.index.astype(int) + 1).astype(str)
-                        for col in ["predicted_cell_type", "predicted_cell_type_confidence"]:
-                            if col in shifted.columns:
-                                adata.obs[col] = shifted[col].reindex(adata.obs.index)
-                        new_frac = adata.obs.get("predicted_cell_type", pd.Series(dtype=str)).notna().mean()
-                        if new_frac > 0.5:
-                            print(f"[INFO] Xenium annotation: applied +1 ID offset ({new_frac:.0%} matched)")
-                    except (ValueError, TypeError):
-                        pass
+                    print(f"[DEBUG] Xenium ID mismatch — baseline first 5: {list(adata.obs.index[:5])}")
+                    print(f"[DEBUG] Annotation CSV first 5: {list(annot_df.index[:5])}")
+                    # Try +1 offset (sopa 0-indexed vs xenium 1-indexed)
+                    for offset in [1, -1]:
+                        try:
+                            shifted = annot_df.copy()
+                            shifted.index = (shifted.index.astype(int) + offset).astype(str)
+                            for col in ["predicted_cell_type", "predicted_cell_type_confidence"]:
+                                if col in shifted.columns:
+                                    adata.obs[col] = shifted[col].reindex(adata.obs.index)
+                            new_frac = adata.obs.get("predicted_cell_type", pd.Series(dtype=str)).notna().mean()
+                            if new_frac > 0.5:
+                                print(f"[INFO] Xenium annotation: applied {offset:+d} ID offset ({new_frac:.0%} matched)")
+                                break
+                        except (ValueError, TypeError):
+                            pass
 
     # Load Xenium nucleus boundaries once — spatially joined against every method's
     # cell polygons so nuclear_ratio is available for proseg/baysor too.
