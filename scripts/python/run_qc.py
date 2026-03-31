@@ -1065,25 +1065,10 @@ def main():
     method_data = {}
 
     if args.sample_dir:
-        # Prefer xenium_export_reseg h5ad as baseline when available — it has the same
-        # cell IDs used by the classifier, so annotation merging works correctly.
-        _base = Path(output_base) / slide_dir.name if output_base else slide_dir
-        xenium_export_h5ads = list((_base / "xenium_export_reseg" / args.sample_id).glob("*.h5ad")) \
-            if (_base / "xenium_export_reseg" / args.sample_id).exists() else []
-        if xenium_export_h5ads:
-            try:
-                baseline = sc.read_h5ad(xenium_export_h5ads[0])
-                method_data["xenium"] = (baseline, _base / "xenium_export_reseg" / args.sample_id)
-                print(f"[INFO] Xenium baseline: {baseline.n_obs} cells × {baseline.n_vars} genes "
-                      f"(from xenium_export_reseg)")
-            except Exception as e:
-                print(f"[WARN] Could not load xenium_export h5ad, falling back to cell_feature_matrix: {e}")
-                xenium_export_h5ads = []
-        if not xenium_export_h5ads:
-            baseline = load_xenium_baseline(Path(args.sample_dir))
-            if baseline is not None:
-                method_data["xenium"] = (baseline, Path(args.sample_dir))
-                print(f"[INFO] Xenium baseline: {baseline.n_obs} cells × {baseline.n_vars} genes")
+        baseline = load_xenium_baseline(Path(args.sample_dir))
+        if baseline is not None:
+            method_data["xenium"] = (baseline, Path(args.sample_dir))
+            print(f"[INFO] Xenium baseline: {baseline.n_obs} cells × {baseline.n_vars} genes")
 
     for method, h5ad_path in discovered.items():
         try:
@@ -1119,6 +1104,22 @@ def main():
             for col in ["predicted_cell_type", "predicted_cell_type_confidence"]:
                 if col in annot_df.columns:
                     adata.obs[col] = annot_df[col].reindex(adata.obs.index)
+            # Xenium: sopa uses 0-indexed IDs; cell_feature_matrix uses 1-indexed.
+            # If the merge gave no matches, try shifting annotation IDs by +1.
+            if method == "xenium":
+                valid_frac = adata.obs.get("predicted_cell_type", pd.Series(dtype=str)).notna().mean()
+                if valid_frac < 0.05:
+                    try:
+                        shifted = annot_df.copy()
+                        shifted.index = (shifted.index.astype(int) + 1).astype(str)
+                        for col in ["predicted_cell_type", "predicted_cell_type_confidence"]:
+                            if col in shifted.columns:
+                                adata.obs[col] = shifted[col].reindex(adata.obs.index)
+                        new_frac = adata.obs.get("predicted_cell_type", pd.Series(dtype=str)).notna().mean()
+                        if new_frac > 0.5:
+                            print(f"[INFO] Xenium annotation: applied +1 ID offset ({new_frac:.0%} matched)")
+                    except (ValueError, TypeError):
+                        pass
 
     # Load Xenium nucleus boundaries once — spatially joined against every method's
     # cell polygons so nuclear_ratio is available for proseg/baysor too.

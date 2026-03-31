@@ -392,21 +392,33 @@ has_segger <- length(all_contam) > 0 || length(all_mecr) > 0 ||
 if (has_segger) {
     segger_plots <- list()
 
-    # Contamination heatmap — one per method
+    # Consistent cell type order across all heatmaps: union of all types, sorted
+    all_ct_names <- sort(unique(unlist(lapply(all_contam, function(m) rownames(m)))))
+
+    # Contamination heatmap — one per method, fixed axis order
     if (length(all_contam) > 0) {
         for (method in names(all_contam)) {
             mat <- all_contam[[method]]
-            mat_long <- as.data.frame(as.table(as.matrix(mat)))
+            # Pad to the full cell type set so all heatmaps have same axes
+            full_mat <- matrix(0, nrow = length(all_ct_names), ncol = length(all_ct_names),
+                               dimnames = list(all_ct_names, all_ct_names))
+            common_r <- intersect(rownames(mat), all_ct_names)
+            common_c <- intersect(colnames(mat), all_ct_names)
+            full_mat[common_r, common_c] <- as.matrix(mat[common_r, common_c])
+            mat_long <- as.data.frame(as.table(full_mat))
             colnames(mat_long) <- c("source", "target", "contamination")
+            mat_long$source <- factor(mat_long$source, levels = all_ct_names)
+            mat_long$target <- factor(mat_long$target, levels = all_ct_names)
             p_heatmap <- ggplot(mat_long, aes(x = target, y = source, fill = contamination)) +
-                geom_tile(color = "white", linewidth = 0.3) +
+                geom_tile(color = "white", linewidth = 0.2) +
                 scale_fill_gradient(low = "white", high = "#D55E00", name = "Contam.") +
-                labs(title = sprintf("Contamination — %s", method),
-                     x = "Target Cell Type", y = "Source Cell Type") +
-                theme_minimal(base_size = 7) +
-                theme(axis.text.x  = element_text(angle = 45, hjust = 1),
-                      plot.title   = element_text(size = 9, face = "bold"),
-                      aspect.ratio = 1)
+                labs(title = sprintf("Contamination — %s", method), x = NULL, y = NULL) +
+                theme_minimal(base_size = 5) +
+                theme(axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 4),
+                      axis.text.y  = element_text(size = 4),
+                      plot.title   = element_text(size = 7, face = "bold"),
+                      legend.key.size = unit(0.3, "cm"),
+                      legend.text  = element_text(size = 5))
             segger_plots[[paste0("contam_heatmap_", method)]] <- p_heatmap
         }
 
@@ -438,7 +450,7 @@ if (has_segger) {
             labs(title = "Sensitivity by Cell Type", x = NULL, y = "Sensitivity",
                  fill = "Method") +
             theme_minimal(base_size = 8) +
-            theme(axis.text.x  = element_text(angle = 40, hjust = 1),
+            theme(axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5),
                   plot.title   = element_text(size = 9, face = "bold"),
                   legend.text  = element_text(size = 7))
         segger_plots[["sensitivity"]] <- p_sens
@@ -497,28 +509,26 @@ if (has_segger) {
         segger_plots[["entropy"]] <- p_ent
     }
 
-    # Layout: heatmaps get full rows, other plots share rows
+    # Layout: heatmaps on first page(s) — 4 per row; other plots on last page — 4 rows x 1 col
     heatmap_keys <- grep("contam_heatmap", names(segger_plots), value = TRUE)
     other_keys   <- setdiff(names(segger_plots), heatmap_keys)
 
     segger_page_pdf <- sub("\\.pdf$", "_segger.pdf", celltype_page_pdf)
-    pdf(segger_page_pdf, width = 8.5, height = 11)
+    pdf(segger_page_pdf, width = 11, height = 8.5)
 
-    # Heatmaps — two per row
+    # Heatmaps — 4 per row on landscape pages
     if (length(heatmap_keys) > 0) {
-        for (i in seq(1, length(heatmap_keys), by = 2)) {
-            chunk <- heatmap_keys[i:min(i + 1, length(heatmap_keys))]
-            p_row <- wrap_plots(segger_plots[chunk], ncol = 2)
+        for (i in seq(1, length(heatmap_keys), by = 4)) {
+            chunk <- heatmap_keys[i:min(i + 3, length(heatmap_keys))]
+            p_row <- wrap_plots(segger_plots[chunk], ncol = 4)
             print(p_row)
         }
     }
 
-    # Other plots — up to 4 per page
+    # Other plots — 4 rows x 1 column
     if (length(other_keys) > 0) {
-        other_page <- (plot_spacer() /
-                       wrap_plots(segger_plots[other_keys], ncol = 2) /
-                       plot_spacer()) +
-            plot_layout(heights = c(0.05, 1, 0.05)) +
+        n_other <- length(other_keys)
+        other_page <- wrap_plots(segger_plots[other_keys], ncol = 1, nrow = n_other) +
             plot_annotation(
                 title    = "Segger Segmentation Quality Metrics",
                 subtitle = "Computed from reference-derived marker genes",

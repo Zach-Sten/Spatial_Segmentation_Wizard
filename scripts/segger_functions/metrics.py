@@ -304,10 +304,15 @@ def calculate_contamination(
     adata.obsm["spatial"] = (
         adata.obs[["cell_centroid_x", "cell_centroid_y"]].copy().to_numpy()
     )
-    sq.gr.spatial_neighbors(
-        adata, radius=radius, n_neighs=n_neighs, coord_type="generic"
-    )
+    # Use kNN-only (no radius) so contamination works regardless of coordinate scale.
+    # Radius-based lookup silently returns 0 neighbors when coordinates are in pixels
+    # rather than microns (e.g. image-based methods like cellpose).
+    sq.gr.spatial_neighbors(adata, n_neighs=n_neighs, coord_type="generic")
     neighbors = adata.obsp["spatial_connectivities"].tolil()
+    mean_neighbors = np.mean([len(r) for r in neighbors.rows])
+    if mean_neighbors < 1:
+        print(f"[WARN] contamination: mean neighbors = {mean_neighbors:.1f} — "
+              "spatial graph is empty, all values will be 0")
     raw_counts = adata[:, adata.var_names].layers["raw"].toarray()
     cell_types = adata.obs[celltype_column]
     selected_cells = np.random.choice(
