@@ -385,11 +385,17 @@ def calculate_sensitivity(
                 subset.n_obs, max_cells_per_type, replace=False
             )
             subset = subset[cell_indices]
+        # get_indexer returns -1 for genes absent in this adata — filter them out
+        gene_idx = subset.var_names.get_indexer(markers)
+        gene_idx = gene_idx[gene_idx >= 0]
         for cell_counts in subset.X:
-            expressed_markers = np.asarray(
-                (cell_counts[subset.var_names.get_indexer(markers)] > 0).sum()
-            )
-            sensitivity = expressed_markers / len(markers) if markers else 0
+            import scipy.sparse as _ssp
+            if _ssp.issparse(cell_counts):
+                cell_arr = np.asarray(cell_counts.todense()).flatten()
+            else:
+                cell_arr = np.asarray(cell_counts).flatten()
+            n_expressed = int((cell_arr[gene_idx] > 0).sum()) if len(gene_idx) > 0 else 0
+            sensitivity = n_expressed / len(markers) if markers else 0
             sensitivity_results[cell_type].append(sensitivity)
     return sensitivity_results
 

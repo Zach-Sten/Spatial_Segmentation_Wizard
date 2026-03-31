@@ -827,6 +827,10 @@ def compute_segger_metrics(method_data: dict, qc_dir: Path, base_dir: Path,
     """
     import pickle
 
+    # Remove stale segger CSVs from previous runs so R never reads empty/outdated files
+    for stale in qc_dir.glob("segger_*.csv"):
+        stale.unlink()
+
     try:
         from segger_functions.metrics import (
             compute_MECR, compute_quantized_mecr_area,
@@ -863,6 +867,13 @@ def compute_segger_metrics(method_data: dict, qc_dir: Path, base_dir: Path,
         # Alias predicted_cell_type to celltype_major (used by segger functions)
         adata = adata.copy()
         adata.obs["celltype_major"] = adata.obs["predicted_cell_type"].astype(str)
+
+        # If annotation merge produced mostly NaNs (cell ID mismatch), skip segger for this method
+        valid_frac = (adata.obs["celltype_major"] != "nan").mean()
+        if valid_frac < 0.2:
+            print(f"[WARN] {method}: only {valid_frac:.0%} cells have valid cell types "
+                  f"(annotation cell ID mismatch?) — skipping segger metrics")
+            continue
 
         # Ensure a "raw" layer exists (contamination function requires it)
         if "raw" not in adata.layers:
