@@ -333,6 +333,7 @@ def wizard():
 
     # Ask GPU/CPU for any selected GPU-capable methods
     GPU_METHODS = {"cellpose", "bidcell"}
+    gpu_partition = None  # ask once if any GPU method is enabled
     print()
     for method in [m for m in selected if m in GPU_METHODS]:
         use_gpu = prompt_yn(f"Use GPU for {method}?", default=True)
@@ -340,6 +341,11 @@ def wizard():
             METHOD_DEFAULTS[method]["slurm"]["gpu"] = False
             if method == "cellpose":
                 METHOD_DEFAULTS[method]["params"]["gpu"] = False
+        else:
+            # Ask for GPU partition once (GPU nodes are often in a specific partition)
+            if gpu_partition is None:
+                gpu_partition = prompt("  GPU partition", default="common").strip() or "common"
+            METHOD_DEFAULTS[method]["slurm"]["partition"] = gpu_partition
 
     # Ask FastReseg source method if selected
     fastreseg_source = "xenium"
