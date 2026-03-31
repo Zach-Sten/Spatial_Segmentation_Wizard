@@ -125,11 +125,26 @@ def export_inputs(source_dir: Path, sample_dir: Path, inputs_dir: Path):
         "y_location":   "y",
         "z_location":   "z",
     })
-    # Ensure CellId is string; coerce UNASSIGNED / NaN → "0" (extracellular)
-    trans_df["CellId"] = (
-        pd.to_numeric(trans_df["CellId"], errors="coerce")
-        .fillna(0).astype(int).astype(str)
+
+    # ── Diagnose cell ID format before any conversion ──────────────────────────
+    _raw_sample = trans_df["CellId"].dropna().unique()[:8].tolist()
+    print(f"[INFO] Sample raw cell_id values from parquet: {_raw_sample}")
+    print(f"[INFO] Sample obs_names from h5ad: {adata.obs_names[:8].tolist()}")
+
+    # ── Normalize CellId to string, preserving original format ─────────────────
+    # Newer Xenium outputs use hex or string IDs that pd.to_numeric silently
+    # zeros out; preserve them so they can match the h5ad obs_names.
+    # Only the known "no-cell" sentinels (NaN, "UNASSIGNED", numeric 0) → "0".
+    raw_ids = trans_df["CellId"].fillna("0").astype(str).str.strip()
+    extracellular_mask = (
+        raw_ids.isin({"UNASSIGNED", "nan", "None", ""})
+        | (pd.to_numeric(raw_ids, errors="coerce") == 0)
     )
+    raw_ids[extracellular_mask] = "0"
+    trans_df["CellId"] = raw_ids
+
+    n_in_cell = (trans_df["CellId"] != "0").sum()
+    print(f"[INFO] Transcripts assigned to cells: {n_in_cell:,} / {len(trans_df):,}")
     trans_df["transcript_id"] = trans_df["transcript_id"].astype(str)
 
     trans_df.to_csv(inputs_dir / "transcripts.csv", index=False)
