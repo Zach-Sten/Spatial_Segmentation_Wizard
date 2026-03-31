@@ -432,7 +432,7 @@ if (has_segger) {
             segger_plots[[paste0("contam_heatmap_", method)]] <- p_heatmap
         }
 
-        # Contamination boxplot across methods
+        # Contamination distribution boxplot (overall, per method)
         contam_box_list <- lapply(names(all_contam), function(method) {
             mat <- all_contam[[method]]
             vals <- as.vector(as.matrix(mat))
@@ -442,10 +442,37 @@ if (has_segger) {
         contam_box_df$method <- factor(contam_box_df$method, levels = method_levels)
         p_contam_box <- ggplot(contam_box_df, aes(x = method, y = contamination, fill = method)) +
             geom_boxplot(outlier.shape = NA, width = 0.6) +
-            coord_cartesian(ylim = c(0, quantile(contam_box_df$contamination, 0.99, na.rm = TRUE))) +
-            labs(title = "Contamination Distribution", x = NULL, y = "Contamination") +
+            labs(title = "Contamination Distribution (Overall)", x = NULL, y = "Contamination") +
             fill_scale + tt
         segger_plots[["contam_box"]] <- p_contam_box
+
+        # Neighborhood contamination boxplot: per source cell type × method
+        # For each source cell type, shows distribution of contamination values into all target types
+        contam_neigh_list <- lapply(names(all_contam), function(method) {
+            mat <- all_contam[[method]]
+            df <- as.data.frame(as.table(as.matrix(mat)))
+            colnames(df) <- c("source", "target", "contamination")
+            df$contamination <- as.numeric(df$contamination)
+            df <- df[is.finite(df$contamination), ]
+            df$method <- method
+            df
+        })
+        contam_neigh_df <- bind_rows(contam_neigh_list)
+        contam_neigh_df$method  <- factor(contam_neigh_df$method,  levels = method_levels)
+        contam_neigh_df$source  <- factor(contam_neigh_df$source,  levels = all_ct_names)
+        p_contam_neigh <- ggplot(contam_neigh_df,
+                                 aes(x = source, y = contamination, fill = method)) +
+            geom_boxplot(outlier.shape = NA, width = 0.6,
+                         position = position_dodge(width = 0.75)) +
+            scale_fill_manual(values = ditto_colors) +
+            labs(title = "Neighborhood Contamination by Cell Type",
+                 x = NULL, y = "Contamination", fill = "Method") +
+            theme_minimal(base_size = 8) +
+            theme(axis.text.x   = element_text(angle = 90, hjust = 1, vjust = 0.5),
+                  plot.title    = element_text(size = 9, face = "bold"),
+                  legend.text   = element_text(size = 7),
+                  legend.key.size = unit(0.35, "cm"))
+        segger_plots[["contam_neighborhood"]] <- p_contam_neigh
     }
 
     # Sensitivity boxplot
@@ -472,7 +499,6 @@ if (has_segger) {
         mecr_df$method <- factor(mecr_df$method, levels = method_levels)
         p_mecr <- ggplot(mecr_df, aes(x = method, y = mecr, fill = method)) +
             geom_boxplot(outlier.shape = NA, width = 0.6) +
-            coord_cartesian(ylim = c(0, quantile(mecr_df$mecr, 0.99, na.rm = TRUE))) +
             labs(title = "MECR Distribution", x = NULL, y = "MECR") +
             fill_scale + tt
         segger_plots[["mecr"]] <- p_mecr
@@ -492,6 +518,7 @@ if (has_segger) {
                             fill = method), alpha = 0.15, color = NA) +
             scale_fill_manual(values = ditto_colors) +
             scale_color_manual(values = ditto_colors) +
+            coord_cartesian(xlim = c(0, 2000)) +
             labs(title = "MECR vs Cell Area (quantized)",
                  x = "Average Cell Area", y = "Average MECR", color = "Method") +
             theme_minimal(base_size = 9) +
