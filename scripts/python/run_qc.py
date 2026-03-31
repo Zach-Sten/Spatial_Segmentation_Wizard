@@ -1067,12 +1067,13 @@ def main():
     if args.sample_dir:
         # Prefer xenium_export_reseg h5ad as baseline when available — it has the same
         # cell IDs used by the classifier, so annotation merging works correctly.
-        xenium_export_h5ads = list((base_dir / "xenium_export_reseg" / args.sample_id).glob("*.h5ad")) \
-            if (base_dir / "xenium_export_reseg" / args.sample_id).exists() else []
+        _base = Path(output_base) / slide_dir.name if output_base else slide_dir
+        xenium_export_h5ads = list((_base / "xenium_export_reseg" / args.sample_id).glob("*.h5ad")) \
+            if (_base / "xenium_export_reseg" / args.sample_id).exists() else []
         if xenium_export_h5ads:
             try:
                 baseline = sc.read_h5ad(xenium_export_h5ads[0])
-                method_data["xenium"] = (baseline, base_dir / "xenium_export_reseg" / args.sample_id)
+                method_data["xenium"] = (baseline, _base / "xenium_export_reseg" / args.sample_id)
                 print(f"[INFO] Xenium baseline: {baseline.n_obs} cells × {baseline.n_vars} genes "
                       f"(from xenium_export_reseg)")
             except Exception as e:
