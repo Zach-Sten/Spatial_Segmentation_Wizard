@@ -85,23 +85,37 @@ def main():
     def _run():
         try:
             sopa.segmentation.baysor(sdata, min_area=params.get("min_area", 10))
-        except (asyncio.TimeoutError, TimeoutError):
-            # Dask worker cleanup times out because Julia/baysor subprocesses are
-            # slow to exit. Patch results are written to disk as segmentation_counts.loom
-            # BEFORE the timeout fires — so we can resolve directly from disk without
-            # going through the dask distributed backend at all.
-            print("[WARN] Dask worker cleanup timed out — resolving patch results from disk...")
-            min_area = params.get("min_area", 10)
+        except Exception as e:
+            # CalledProcessError  — one patch's Baysor binary returned non-zero; dask
+            #                       cancels remaining futures but completed patches already
+            #                       wrote segmentation_counts.loom to disk.
+            # TimeoutError        — dask worker cleanup hung after all patches finished.
+            # Either way: resolve from whatever loom files landed on disk.
+            print(f"[WARN] Baysor dask run failed ({type(e).__name__}: {e})")
+            print("[WARN] Attempting to resolve completed patches from disk...")
+
             try:
                 from sopa.segmentation.transcripts import resolve
             except ImportError:
                 from sopa.segmentation.methods._baysor import resolve
 
             from sopa.utils import get_transcripts_patches_dirs
-            patches_dirs = get_transcripts_patches_dirs(sdata)
-            print(f"[INFO] Resolving {len(patches_dirs)} patch directories from disk...")
-            resolve(sdata, patches_dirs, min_area=min_area, key_added="baysor_boundaries")
-            print("[INFO] Manual resolve complete — baysor_boundaries added to sdata")
+            all_dirs = get_transcripts_patches_dirs(sdata)
+
+            # Only pass directories that actually finished (have a loom file on disk)
+            completed = [p for p in all_dirs
+                         if (Path(p) / "segmentation_counts.loom").exists()]
+            print(f"[INFO] Completed patches on disk: {len(completed)} / {len(all_dirs)}")
+
+            if not completed:
+                raise RuntimeError(
+                    "No completed Baysor patches found on disk — cannot recover. "
+                    "Check baysor logs for the root cause."
+                ) from e
+
+            min_area = params.get("min_area", 10)
+            resolve(sdata, completed, min_area=min_area, key_added="baysor_boundaries")
+            print(f"[INFO] Resolved from {len(completed)} patch(es) — baysor_boundaries added to sdata")
     _run()
 
     aggregate_and_save(
