@@ -210,7 +210,7 @@ def build_output(output_dir: Path, sample_id: str):
         adata.obs["cell_centroid_y"] = cell_meta["y"].values
 
     # ── Reconstruct boundaries from updated transcript assignments ──
-    boundary_path = output_dir / "fastreseg_boundaries.parquet"
+    boundary_path = output_dir / "cell_boundaries.parquet"  # QC expects this name
     if trans_csv.exists():
         trans_df = pd.read_csv(trans_csv)
         # Identify updated cell ID column
@@ -251,6 +251,75 @@ def build_output(output_dir: Path, sample_id: str):
     print(f"[INFO] Saved: {h5ad_path.name} ({adata.n_obs} cells × {adata.n_vars} genes)")
 
     return adata
+
+
+# ── Stage 4: Xenium Explorer export ──────────────────────────────────────────
+
+@timed("Stage 4: Export to Xenium Explorer")
+def export_to_explorer(sample_dir: Path, output_dir: Path, sample_id: str,
+                       explorer_mode: str = "+cbm"):
+    """Wire FastReseg h5ad + boundaries into SpatialData → export for Xenium Explorer."""
+    import scanpy as sc
+    import geopandas as gpd
+    from spatialdata.models import TableModel, ShapesModel
+    import sopa
+
+    from utils.data_io import load_xenium_data
+
+    # Load raw Xenium sdata (images + transcripts)
+    print(f"[INFO] Loading raw Xenium sdata from: {sample_dir}")
+    sdata = load_xenium_data(str(sample_dir))
+
+    # Load FastReseg h5ad
+    h5ad_path = output_dir / f"{sample_id}.h5ad"
+    if not h5ad_path.exists():
+        raise FileNotFoundError(f"FastReseg h5ad not found: {h5ad_path}")
+    adata = sc.read_h5ad(h5ad_path)
+    print(f"[INFO] FastReseg h5ad: {adata.n_obs} cells × {adata.n_vars} genes")
+
+    # Load boundaries
+    boundary_path = output_dir / "cell_boundaries.parquet"
+    if not boundary_path.exists():
+        raise FileNotFoundError(f"FastReseg boundaries not found: {boundary_path}")
+    gdf = gpd.read_parquet(boundary_path)
+    print(f"[INFO] FastReseg boundaries: {len(gdf)} shapes")
+
+    # Align adata to gdf order on cell_id
+    gdf["cell_id"] = gdf["cell_id"].astype(str)
+    gdf = gdf.set_index("cell_id")
+    common = [cid for cid in adata.obs_names if cid in gdf.index]
+    if len(common) < adata.n_obs:
+        print(f"[WARN] {adata.n_obs - len(common)} cells have no boundary — dropping from export")
+    adata = adata[common].copy()
+    gdf = gdf.loc[common].reset_index()
+
+    # Register boundaries in sdata
+    shapes_key = "fastreseg_boundaries"
+    gdf_parsed = ShapesModel.parse(gdf.set_index("cell_id"))
+    sdata.shapes[shapes_key] = gdf_parsed
+
+    # Build TableModel-compliant AnnData
+    adata.obs["instance_id"] = adata.obs_names.astype(str)
+    table = TableModel.parse(
+        adata,
+        region=shapes_key,
+        region_key="region",
+        instance_key="instance_id",
+    )
+    # Replace existing table
+    if "table" in sdata.tables:
+        del sdata.tables["table"]
+    sdata.tables["table"] = table
+
+    # Export
+    print(f"[INFO] Exporting to Xenium Explorer (mode={explorer_mode}): {output_dir}")
+    sopa.io.explorer.write(
+        str(output_dir),
+        sdata,
+        mode=explorer_mode,
+        save_h5ad=False,
+    )
+    print("[INFO] Explorer export complete.")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -328,6 +397,18 @@ def main():
     except Exception as e:
         print(f"[ERROR] Stage 3 failed: {e}")
         sys.exit(1)
+
+    # ── Stage 4: Xenium Explorer export ──
+    explorer_mode = method_cfg.get("params", {}).get("explorer_mode", "+cbm")
+    if explorer_mode:
+        print("\n── Stage 4: Export to Xenium Explorer ──")
+        try:
+            export_to_explorer(sample_dir, output_dir, args.sample_id, explorer_mode)
+        except Exception as e:
+            print(f"[WARN] Stage 4 (Explorer export) failed: {e}")
+            print("[WARN] FastReseg results are still valid; Explorer export skipped.")
+    else:
+        print("\n[INFO] Stage 4 skipped (explorer_mode is empty in config)")
 
     elapsed = time.time() - t_start
     save_run_metadata(output_dir, "fastreseg", method_cfg, elapsed)

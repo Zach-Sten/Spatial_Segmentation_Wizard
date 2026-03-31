@@ -238,7 +238,7 @@ result <- fastReseg_full_pipeline(
     zstep_size           = 1.0,
     invert_y             = FALSE,
     path_to_output       = file.path(output_dir, "fastreseg_intermediates"),
-    save_intermediates   = FALSE,
+    save_intermediates   = TRUE,   # needed: populates updated_transDF_list for boundaries
     return_perCellData   = TRUE,
     percentCores         = 0.75,
 )
