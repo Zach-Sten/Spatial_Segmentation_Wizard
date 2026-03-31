@@ -1041,7 +1041,7 @@ def main():
     # The classifier writes {sample_id}_predicted_celltypes.csv alongside the h5ad.
     import shutil as _shutil
     base_dir = Path(output_base) / slide_dir.name if output_base else slide_dir
-    for method, (_, output_dir) in method_data.items():
+    for method, (adata, output_dir) in method_data.items():
         if method == "xenium":
             # Annotations for xenium baseline come from xenium_export_reseg (not the raw dir)
             annot_csv = base_dir / "xenium_export_reseg" / args.sample_id / f"{args.sample_id}_predicted_celltypes.csv"
@@ -1050,6 +1050,13 @@ def main():
         if annot_csv.exists():
             _shutil.copy(annot_csv, qc_dir / f"annotations_{method}.csv")
             print(f"[INFO] Annotation CSV found for {method}: {annot_csv.name}")
+            # Also merge annotations into adata.obs so segger metrics can use them
+            annot_df = pd.read_csv(annot_csv, index_col=0)
+            annot_df.index = annot_df.index.astype(str)
+            adata.obs.index = adata.obs.index.astype(str)
+            for col in ["predicted_cell_type", "predicted_cell_type_confidence"]:
+                if col in annot_df.columns:
+                    adata.obs[col] = annot_df[col].reindex(adata.obs.index)
 
     # Load Xenium nucleus boundaries once — spatially joined against every method's
     # cell polygons so nuclear_ratio is available for proseg/baysor too.
