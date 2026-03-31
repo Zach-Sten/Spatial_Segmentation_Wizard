@@ -252,13 +252,20 @@ if (has_annotations) {
               legend.key.size = unit(0.35, "cm"),
               axis.text.x     = element_text(angle = 20, hjust = 1))
 
-    p_comp_n <- ggplot(comp_df, aes(x = predicted_cell_type, y = n, fill = method)) +
+    # Order cell types by total count descending (largest at top of horizontal chart)
+    ct_total <- comp_df %>%
+        group_by(predicted_cell_type) %>%
+        summarise(total = sum(n), .groups = "drop") %>%
+        arrange(desc(total))
+    comp_df$predicted_cell_type <- factor(comp_df$predicted_cell_type,
+                                          levels = rev(ct_total$predicted_cell_type))
+
+    p_comp_n <- ggplot(comp_df, aes(y = predicted_cell_type, x = n, fill = method)) +
         geom_col(position = "dodge", width = 0.7) +
         scale_fill_manual(values = ditto_colors) +
-        labs(title = "Cell Count by Type", x = NULL, y = "# Cells", fill = "Method") +
+        labs(title = "Cell Count by Type", y = NULL, x = "# Cells", fill = "Method") +
         theme_minimal(base_size = 9) +
         theme(plot.title      = element_text(size = 9, face = "bold"),
-              axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5),
               legend.text     = element_text(size = 7),
               legend.key.size = unit(0.35, "cm"))
 
@@ -511,18 +518,18 @@ if (has_segger) {
         segger_plots[["entropy"]] <- p_ent
     }
 
-    # Layout: heatmaps on first page(s) — 4 per row; other plots on last page — 4 rows x 1 col
+    # Layout: heatmaps on first page(s) — 2 per row; other plots on last page — 4 rows x 1 col
     heatmap_keys <- grep("contam_heatmap", names(segger_plots), value = TRUE)
     other_keys   <- setdiff(names(segger_plots), heatmap_keys)
 
     segger_page_pdf <- sub("\\.pdf$", "_segger.pdf", celltype_page_pdf)
-    pdf(segger_page_pdf, width = 11, height = 8.5)
+    pdf(segger_page_pdf, width = 8.5, height = 11)
 
-    # Heatmaps — 3 per row on landscape pages
+    # Heatmaps — 2 per row on portrait pages
     if (length(heatmap_keys) > 0) {
-        for (i in seq(1, length(heatmap_keys), by = 3)) {
-            chunk <- heatmap_keys[i:min(i + 2, length(heatmap_keys))]
-            p_row <- wrap_plots(segger_plots[chunk], ncol = 3)
+        for (i in seq(1, length(heatmap_keys), by = 2)) {
+            chunk <- heatmap_keys[i:min(i + 1, length(heatmap_keys))]
+            p_row <- wrap_plots(segger_plots[chunk], ncol = 2)
             print(p_row)
         }
     }
