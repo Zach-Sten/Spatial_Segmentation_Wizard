@@ -170,10 +170,12 @@ if (packageVersion("data.table") >= "1.15.0") {
     }
     cat(sprintf("[INFO] AST walk patched %d FastReseg function(s)\n", n_patched))
 
-    # ── Fallback: deparse/gsub/parse ─────────────────────────────────────────
-    # If AST walk found nothing (e.g. byte-compiled functions), try text substitution.
-    if (n_patched == 0L) {
-        cat("[WARN] AST walk patched 0 — trying deparse/gsub fallback...\n")
+    # ── Supplemental: deparse/gsub/parse for get() patterns ─────────────────
+    # The AST walk handles bare symbols fine but silently skips by=get() calls.
+    # Always run this pass to catch remaining get() patterns (safe to double-run:
+    # already-fixed c(...) and eval(get(...)) won't match the patterns below).
+    {
+        cat("[INFO] Running deparse/gsub pass for remaining get() patterns...\n")
         n_gsub <- 0L
         for (fn_name in ls(ns, all.names = TRUE)) {
             obj <- tryCatch(get(fn_name, envir = ns), error = function(e) NULL)
