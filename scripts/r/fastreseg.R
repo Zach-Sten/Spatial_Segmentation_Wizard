@@ -125,14 +125,16 @@ if (packageVersion("data.table") >= "1.15.0") {
                            !is.null(val[[1]]) &&
                            identical(as.character(val[[1]]), "get") &&
                            length(val) == 2) {
-                    # get() call: by = get(X) → by = eval(X)  (strip the get())
+                    # get() call: by = get(X) → by = eval(get(X))
+                    # data.table 1.15+ requires eval() wrapping; eval(get(X)) is accepted
                     cat(sprintf("[AST-PATCH] get() call: by = %s → by = eval(%s)\n",
-                                deparse(val), deparse(val[[2]])))
-                    x[[i]] <- call("eval", val[[2]])
+                                deparse(val), deparse(val)))
+                    x[[i]] <- call("eval", val)
                 }
                 # already-ok forms (c, list, ., eval, key, literal) → leave as-is
             } else {
-                x[[i]] <- fix_by_calls(val)
+                # Wrap in tryCatch: empty/missing argument symbols cause "arg missing" errors
+                x[[i]] <- tryCatch(fix_by_calls(val), error = function(e) val)
             }
         }
         x
@@ -179,11 +181,14 @@ if (packageVersion("data.table") >= "1.15.0") {
             src <- paste(deparse(body(obj)), collapse = "\n")
             orig <- src
 
-            # Fix 1: by = get(varname) → by = eval(varname)
+            # Fix 1: by = get(varname) → by = eval(get(varname))
+            # data.table 1.15+ rejects bare get(); wrapping in eval() is accepted.
             src <- gsub("\\bby\\s*=\\s*get\\(([^)]+)\\)",
-                        "by = eval(\\1)", src, perl = TRUE)
+                        "by = eval(get(\\1))", src, perl = TRUE)
             # Fix 2: by = barevar (not followed by open-paren) → by = c(barevar)
-            src <- gsub("\\bby\\s*=\\s*([A-Za-z_.][A-Za-z0-9_.]*)(?!\\s*\\()",
+            # \b ensures the WHOLE identifier is matched before the lookahead fires,
+            # preventing partial matches like matching "eva" out of "eval(".
+            src <- gsub("\\bby\\s*=\\s*([A-Za-z_.][A-Za-z0-9_.]*)\\b(?!\\s*\\()",
                         "by = c(\\1)", src, perl = TRUE)
 
             if (!identical(src, orig)) {
