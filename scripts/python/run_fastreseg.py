@@ -291,6 +291,7 @@ def export_to_explorer(output_dir: Path, sample_id: str, explorer_mode: str = "+
     shapes_key = "fastreseg_boundaries"
     gdf_parsed = ShapesModel.parse(gdf.set_index("cell_id"))
 
+    adata.obs["region"] = shapes_key
     adata.obs["instance_id"] = adata.obs_names.astype(str)
     table = TableModel.parse(
         adata,
