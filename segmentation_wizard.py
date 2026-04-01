@@ -381,6 +381,23 @@ def wizard():
         label = "10x Xenium (original)" if fastreseg_source == "xenium" else fastreseg_source
         print(f"  {CHECK} FastReseg will refine: {BOLD}{label}{RESET}")
 
+    # Ask memory per selected method
+    MEM_DEFAULTS = {
+        "proseg": "400G", "baysor": "600G", "cellpose": "200G",
+        "bidcell": "300G", "fastreseg": "400G",
+    }
+    fastreseg_mem = "400G"
+    if selected:
+        print()
+        print(f"  {BOLD}Memory per method{RESET} {DIM}(adjust if OOM errors occur){RESET}")
+        for m in selected:
+            default_mem = MEM_DEFAULTS.get(m, "400G")
+            mem = prompt(f"  {m} memory", default=default_mem).strip() or default_mem
+            if m in METHOD_DEFAULTS:
+                METHOD_DEFAULTS[m]["slurm"]["mem"] = mem
+            elif m == "fastreseg":
+                fastreseg_mem = mem
+
     for method in all_methods:
         enabled = method in selected
         cfg["methods"][method] = {"enabled": enabled}
@@ -388,7 +405,7 @@ def wizard():
             cfg["methods"][method].update(METHOD_DEFAULTS[method])
         elif method == "fastreseg" and enabled:
             cfg["methods"][method].update({
-                "slurm": {"mem": "200G", "cpus_per_task": 4, "time": "1-00:00:00"},
+                "slurm": {"mem": fastreseg_mem, "cpus_per_task": 4, "time": "1-00:00:00"},
                 "params": {"source_method": fastreseg_source, "explorer_mode": "+cb"},
             })
 
