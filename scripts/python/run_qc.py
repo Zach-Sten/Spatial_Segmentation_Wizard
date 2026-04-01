@@ -811,11 +811,14 @@ def generate_qc_plots(adata, method_name: str, output_dir: Path):
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    ax.scatter(adata.obs["total_counts"], adata.obs["n_genes_by_counts"], s=1, alpha=0.3, c="steelblue")
+    scatter_df = adata.obs[["total_counts", "n_genes_by_counts"]].dropna()
+    if len(scatter_df) > 5000:
+        scatter_df = scatter_df.sample(5000, random_state=42)
+    ax.scatter(scatter_df["total_counts"], scatter_df["n_genes_by_counts"], s=1, alpha=0.3, c="steelblue")
     ax.set_xlabel("Total Counts")
     ax.set_ylabel("Genes Detected")
-    ax.set_title(f"{method_name}: Counts vs Genes")
-    fig.savefig(output_dir / f"qc_scatter_{method_name}.png", dpi=150, bbox_inches="tight")
+    ax.set_title(f"{method_name}: Counts vs Genes (n={len(scatter_df):,})")
+    fig.savefig(output_dir / f"qc_scatter_{method_name}.png", dpi=100, bbox_inches="tight")
     plt.close(fig)
 
 
