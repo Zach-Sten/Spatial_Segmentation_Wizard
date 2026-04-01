@@ -754,14 +754,16 @@ def generate_and_submit(cfg, config_path, do_submit=False):
                 all_scripts.append(spath)
 
                 if do_submit:
-                    jid = submit_job(spath, dependency_ids=seg_ids)
+                    post_deps = seg_ids + xenium_export_ids
+                    jid = submit_job(spath, dependency_ids=post_deps if post_deps else None)
                     if jid:
                         all_job_ids.append(jid)
                         all_seg_post_ids.append(jid)
                         chain_manifest["jobs"].append(
                             {"method": method, "sample_id": sample.sample_id, "job_id": jid}
                         )
-                        print(f"    {CHECK} {sample.sample_id}/{method} {ARROW} job {jid} {DIM}(after primary){RESET}")
+                        dep_note = "after xenium_export" if not seg_ids else "after primary + xenium_export"
+                        print(f"    {CHECK} {sample.sample_id}/{method} {ARROW} job {jid} {DIM}({dep_note}){RESET}")
                 else:
                     print(f"    {CHECK} submit_{method}_{sample.sample_id}.sh")
 
