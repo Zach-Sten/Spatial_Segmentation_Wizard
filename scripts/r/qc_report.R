@@ -404,8 +404,9 @@ if (has_segger) {
     # Consistent cell type order across all heatmaps: union of all types, sorted
     all_ct_names <- sort(unique(unlist(lapply(all_contam, function(m) rownames(m)))))
 
-    # Contamination heatmap — one per method, fixed axis order
+    # Contamination heatmap — one per method, fixed axis order + shared color scale
     if (length(all_contam) > 0) {
+        contam_global_max <- max(sapply(all_contam, function(m) max(m, na.rm = TRUE)), na.rm = TRUE)
         for (method in names(all_contam)) {
             mat <- all_contam[[method]]
             # Pad to the full cell type set so all heatmaps have same axes
@@ -420,7 +421,8 @@ if (has_segger) {
             mat_long$target <- factor(mat_long$target, levels = all_ct_names)
             p_heatmap <- ggplot(mat_long, aes(x = target, y = source, fill = contamination)) +
                 geom_tile(color = "white", linewidth = 0.2) +
-                scale_fill_gradient(low = "white", high = "#D55E00", name = "Contam.") +
+                scale_fill_gradient(low = "white", high = "#D55E00", name = "Contam.",
+                                    limits = c(0, contam_global_max)) +
                 coord_fixed(ratio = 1) +
                 labs(title = sprintf("Contamination — %s", method), x = NULL, y = NULL) +
                 theme_minimal(base_size = 5) +
@@ -443,7 +445,8 @@ if (has_segger) {
         contam_ymax <- (quantile(contam_box_df$contamination, 0.75, na.rm = TRUE) +
                         1.5 * IQR(contam_box_df$contamination, na.rm = TRUE)) * 1.2
         p_contam_box <- ggplot(contam_box_df, aes(x = method, y = contamination, fill = method)) +
-            geom_boxplot(outlier.shape = NA, width = 0.6) +
+            geom_violin(trim = TRUE) +
+            geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
             coord_cartesian(ylim = c(0, contam_ymax)) +
             labs(title = "Contamination Distribution (Overall)", x = NULL, y = "Contamination") +
             fill_scale + tt
@@ -506,7 +509,8 @@ if (has_segger) {
         mecr_ymax <- (quantile(mecr_df$mecr, 0.75, na.rm = TRUE) +
                       1.5 * IQR(mecr_df$mecr, na.rm = TRUE)) * 1.2
         p_mecr <- ggplot(mecr_df, aes(x = method, y = mecr, fill = method)) +
-            geom_boxplot(outlier.shape = NA, width = 0.6) +
+            geom_violin(trim = TRUE) +
+            geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
             coord_cartesian(ylim = c(0, mecr_ymax)) +
             labs(title = "MECR Distribution", x = NULL, y = "MECR") +
             fill_scale + tt
