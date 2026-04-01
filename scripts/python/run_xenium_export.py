@@ -54,6 +54,19 @@ def main():
     adata = sdata["table"]
     print(f"[INFO] Loaded: {adata.n_obs} cells × {adata.n_vars} genes")
 
+    # spatialdata_io sets obs_names as integers ('0','1',...); remap to barcode strings
+    barcodes_path = sample_dir / "cell_feature_matrix" / "barcodes.tsv.gz"
+    if barcodes_path.exists():
+        try:
+            barcodes = pd.read_csv(barcodes_path, header=None, compression="gzip")[0].values
+            idx_ints = adata.obs_names.astype(int)
+            adata.obs_names = barcodes[idx_ints].astype(str)
+            print(f"[INFO] obs_names remapped to barcodes ({adata.n_obs} cells)")
+        except Exception as e:
+            print(f"[WARN] Barcode remapping failed: {e} — keeping integer obs_names")
+    else:
+        print("[WARN] barcodes.tsv.gz not found — obs_names will be integer strings")
+
     # Attach full cells metadata and spatial coordinates from cells.csv.gz
     for cells_file in [sample_dir / "cells.csv.gz", sample_dir / "cells.csv"]:
         if cells_file.exists():
