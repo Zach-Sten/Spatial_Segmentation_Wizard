@@ -292,13 +292,18 @@ def _predict_and_save(clf, le, gene_list, query_path: Path, output_dir: Path, sa
                 coefs.append(coef)
             return "".join(chr(97 + c) for c in reversed(coefs)) + "-1"
 
-        cell_ids = [_str_cell_id(int(n)) for n in query.obs_names]
+        try:
+            cell_ids = [_str_cell_id(int(n)) for n in query.obs_names]
+            print(f"[INFO] FastReseg: encoded {len(cell_ids)} integer obs_names → Explorer barcode strings")
+        except ValueError:
+            # h5ad from older run already has barcode obs_names — use them directly
+            cell_ids = list(query.obs_names)
+            print(f"[INFO] FastReseg: obs_names are already barcode strings, using directly ({len(cell_ids)} cells)")
         explorer_df = pd.DataFrame({
             "cell_id": cell_ids,
             "group":   query.obs["predicted_cell_type"].values,
             "color":   query.obs["predicted_cell_type"].map(ct_color_map).values,
         })
-        print(f"[INFO] FastReseg: encoded {len(explorer_df)} integer obs_names → Explorer barcode strings")
     else:
         explorer_df = pd.DataFrame({
             "cell_id": query.obs_names,
