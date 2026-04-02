@@ -260,7 +260,7 @@ if (length(all_annot_morpho) > 0) {
                 mutate(predicted_cell_type = factor(predicted_cell_type, levels = ct_order))
             ggplot(sub_df, aes(x = value, y = predicted_cell_type,
                                fill = predicted_cell_type)) +
-                geom_boxplot(show.legend = FALSE, outlier.size = 0.3, outlier.alpha = 0.3,
+                geom_boxplot(show.legend = FALSE, outlier.shape = NA,
                              linewidth = 0.4) +
                 scale_fill_manual(values = ct_colors_map) +
                 labs(title = metric, x = NULL, y = NULL) +
