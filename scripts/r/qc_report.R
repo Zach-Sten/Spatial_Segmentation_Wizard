@@ -247,21 +247,21 @@ if (length(all_annot_morpho) > 0) {
     available_ct_morpho <- intersect(morpho_ct_metrics, colnames(am_df))
 
     if (length(available_ct_morpho) > 0) {
-        # Mean per cell type (averaged across all methods)
-        ct_mean_df <- am_df %>%
-            group_by(predicted_cell_type) %>%
-            summarise(across(all_of(available_ct_morpho), mean, na.rm = TRUE),
-                      .groups = "drop")
-
         p_morpho_ct <- lapply(available_ct_morpho, function(metric) {
-            sub_df <- ct_mean_df %>%
+            # Sort cell types by median descending
+            ct_order <- am_df %>%
+                group_by(predicted_cell_type) %>%
+                summarise(med = median(.data[[metric]], na.rm = TRUE), .groups = "drop") %>%
+                arrange(med) %>%
+                pull(predicted_cell_type)
+            sub_df <- am_df %>%
                 select(predicted_cell_type, value = all_of(metric)) %>%
-                arrange(desc(value)) %>%
-                mutate(predicted_cell_type = factor(predicted_cell_type,
-                                                    levels = rev(predicted_cell_type)))
+                filter(!is.na(value)) %>%
+                mutate(predicted_cell_type = factor(predicted_cell_type, levels = ct_order))
             ggplot(sub_df, aes(x = value, y = predicted_cell_type,
                                fill = predicted_cell_type)) +
-                geom_col(show.legend = FALSE) +
+                geom_boxplot(show.legend = FALSE, outlier.size = 0.3, outlier.alpha = 0.3,
+                             linewidth = 0.4) +
                 scale_fill_manual(values = ct_colors_map) +
                 labs(title = metric, x = NULL, y = NULL) +
                 theme_minimal(base_size = 8) +
@@ -272,7 +272,7 @@ if (length(all_annot_morpho) > 0) {
         morpho_ct_page <- wrap_plots(p_morpho_ct, ncol = 3) +
             plot_annotation(
                 title    = "Morphological Metrics by Cell Type",
-                subtitle = "Mean value per cell type (averaged across methods with available boundaries)",
+                subtitle = "Distribution per cell type across all methods with available boundaries",
                 theme    = theme(plot.title = element_text(size = 11, face = "bold"))
             )
 
