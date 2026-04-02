@@ -1,6 +1,5 @@
 name: spatial_segmentation_env
 channels:
-  - rapidsai
   - nvidia
   - conda-forge
   - pytorch
@@ -16,9 +15,6 @@ dependencies:
   - torchvision
   - torchaudio
   - pytorch-cuda=12.4
-
-  # ── RAPIDS (cuDF, cuML, cuGraph, cuSpatial — GPU dataframe/ML stack for Segger) ──
-  - rapids=24.12
 
   # ── Core spatial / single-cell stack ──
   - scanpy
@@ -56,7 +52,7 @@ dependencies:
   - r-base
   - r-sf
   - r-lwgeom
-  - r-terra>=1.8.21
+  - r-terra
   - r-igraph
   - r-concaveman
   - r-devtools
