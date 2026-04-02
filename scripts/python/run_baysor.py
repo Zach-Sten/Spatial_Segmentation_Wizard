@@ -84,7 +84,11 @@ def main():
     @timed("Baysor segmentation")
     def _run():
         try:
-            sopa.segmentation.baysor(sdata, min_area=params.get("min_area", 10))
+            baysor_kwargs = {"min_area": params.get("min_area", 10)}
+            # When no prior is set, sopa can't infer cell scale — must provide explicitly
+            if not params.get("prior_shapes_key"):
+                baysor_kwargs["scale"] = params.get("scale", 15)
+            sopa.segmentation.baysor(sdata, **baysor_kwargs)
         except Exception as e:
             # CalledProcessError  — one patch's Baysor binary returned non-zero; dask
             #                       cancels remaining futures but completed patches already
