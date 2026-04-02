@@ -56,7 +56,7 @@ dependencies:
   - r-base
   - r-sf
   - r-lwgeom
-  - r-terra
+  - r-terra>=1.8.21
   - r-igraph
   - r-concaveman
   - r-devtools

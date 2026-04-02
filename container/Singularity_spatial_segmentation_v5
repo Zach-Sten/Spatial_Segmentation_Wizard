@@ -181,6 +181,10 @@ print('CPSAM model cached OK')
     library(remotes)
     cat("Installing GiottoUtils...\n")
     remotes::install_github("drieslab/GiottoUtils", upgrade="never")
+    # Upgrade terra first — GiottoClass requires >= 1.8.21
+    if (packageVersion("terra") < "1.8.21") {
+      install.packages("terra", repos="https://cloud.r-project.org")
+    }
     cat("Installing GiottoClass...\n")
     remotes::install_github("drieslab/GiottoClass", upgrade="never")
     cat("Installing FastReseg...\n")
