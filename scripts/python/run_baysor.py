@@ -106,9 +106,16 @@ def main():
             from sopa.utils import get_transcripts_patches_dirs
             all_dirs = get_transcripts_patches_dirs(sdata)
 
-            # Only pass directories that actually finished (have a loom file on disk)
-            completed = [p for p in all_dirs
-                         if (Path(p) / "segmentation_counts.loom").exists()]
+            # Only pass directories that fully finished (loom + polygon file both present)
+            def _patch_complete(p):
+                p = Path(p)
+                if not (p / "segmentation_counts.loom").exists():
+                    return False
+                # sopa looks for segmentation_polygons.json (new) or segmentation.json (old)
+                return (p / "segmentation_polygons.json").exists() or \
+                       (p / "segmentation.json").exists()
+
+            completed = [p for p in all_dirs if _patch_complete(p)]
             print(f"[INFO] Completed patches on disk: {len(completed)} / {len(all_dirs)}")
 
             if not completed:
