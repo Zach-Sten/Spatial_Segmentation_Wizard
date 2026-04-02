@@ -734,11 +734,12 @@ def generate_pdf_report(comparison_csv: Path, qc_dir: Path, sample_id: str, guid
         7. R-generated segger metrics page (if segger CSVs available)
     """
     pdf_path      = qc_dir / "qc_report.pdf"
-    qc_page       = qc_dir / "_temp_qc_page.pdf"
-    morpho_page   = qc_dir / "_temp_morpho_page.pdf"
-    celltype_page = qc_dir / "_temp_celltype_page.pdf"
-    conf_page     = qc_dir / "_temp_celltype_page_conf.pdf"
-    segger_page   = qc_dir / "_temp_celltype_page_segger.pdf"
+    qc_page        = qc_dir / "_temp_qc_page.pdf"
+    morpho_page    = qc_dir / "_temp_morpho_page.pdf"
+    morpho_ct_page = qc_dir / "_temp_morpho_page_morpho_ct.pdf"
+    celltype_page  = qc_dir / "_temp_celltype_page.pdf"
+    conf_page      = qc_dir / "_temp_celltype_page_conf.pdf"
+    segger_page    = qc_dir / "_temp_celltype_page_segger.pdf"
 
     if not _QC_REPORT_R_SCRIPT.exists():
         print(f"[ERROR] R script not found: {_QC_REPORT_R_SCRIPT}")
@@ -761,6 +762,8 @@ def generate_pdf_report(comparison_csv: Path, qc_dir: Path, sample_id: str, guid
     pages = [guide_pg1, qc_page]
     if morpho_page.exists():
         pages += [guide_pg3, morpho_page]
+    if morpho_ct_page.exists():
+        pages.append(morpho_ct_page)
     if celltype_page.exists():
         pages.append(celltype_page)
     if conf_page.exists():
@@ -908,6 +911,7 @@ def compute_segger_metrics(method_data: dict, qc_dir: Path, base_dir: Path,
                 morpho_df = pd.read_csv(morpho_csv)
                 if "cell_id" in morpho_df.columns:
                     morpho_df = morpho_df.set_index("cell_id")
+                    morpho_df.index = morpho_df.index.astype(str)  # match adata.obs_names string type
                     for col in ["cell_area", "cell_centroid_x", "cell_centroid_y"]:
                         if col in morpho_df.columns:
                             adata.obs[col] = morpho_df[col].reindex(adata.obs_names).values

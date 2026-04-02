@@ -121,6 +121,7 @@ for (method in as.character(method_levels)) {
     morpho_path <- file.path(coords_dir, sprintf("morpho_%s.csv", method))
     if (!file.exists(morpho_path)) next
     df <- read.csv(morpho_path)
+    df$cell_id <- as.character(df$cell_id)   # ensure string for bind_rows compatibility
     df$method <- as.character(method)
     all_morpho[[method]] <- df
 }
@@ -207,6 +208,79 @@ if (length(all_morpho) > 0) {
             print(morpho_page)
         dev.off()
         cat(sprintf("[INFO] Morpho page saved: %s\n", morpho_page_pdf))
+    }
+}
+
+
+# ── Page 2b: Morphological metrics by cell type ──────────────────────────────────
+
+all_annot_morpho <- list()
+for (method in as.character(method_levels)) {
+    annot_path  <- file.path(coords_dir, sprintf("annotations_%s.csv",  method))
+    morpho_path <- file.path(coords_dir, sprintf("morpho_%s.csv", method))
+    if (!file.exists(annot_path) || !file.exists(morpho_path)) next
+    ann <- read.csv(annot_path,  stringsAsFactors = FALSE)
+    mor <- read.csv(morpho_path, stringsAsFactors = FALSE)
+    if (!"predicted_cell_type" %in% colnames(ann)) next
+    if (!"cell_id" %in% colnames(ann)) ann$cell_id <- as.character(rownames(ann))
+    if (!"cell_id" %in% colnames(mor)) mor$cell_id <- as.character(rownames(mor))
+    ann$cell_id <- as.character(ann$cell_id)
+    mor$cell_id <- as.character(mor$cell_id)
+    merged <- inner_join(ann[, c("cell_id", "predicted_cell_type")],
+                         mor, by = "cell_id")
+    merged$method <- method
+    all_annot_morpho[[method]] <- merged
+}
+
+if (length(all_annot_morpho) > 0) {
+    am_df <- bind_rows(all_annot_morpho)
+
+    # Stable cell type → color mapping using ditto palette
+    ct_all   <- sort(unique(am_df$predicted_cell_type))
+    ct_colors_map <- setNames(
+        ditto_colors[seq_along(ct_all) %% length(ditto_colors) + 1],
+        ct_all
+    )
+
+    morpho_ct_metrics <- c("cell_area", "perimeter", "elongation", "circularity",
+                           "compactness", "eccentricity", "solidity", "convexity", "density")
+    available_ct_morpho <- intersect(morpho_ct_metrics, colnames(am_df))
+
+    if (length(available_ct_morpho) > 0) {
+        # Mean per cell type (averaged across all methods)
+        ct_mean_df <- am_df %>%
+            group_by(predicted_cell_type) %>%
+            summarise(across(all_of(available_ct_morpho), mean, na.rm = TRUE),
+                      .groups = "drop")
+
+        p_morpho_ct <- lapply(available_ct_morpho, function(metric) {
+            sub_df <- ct_mean_df %>%
+                select(predicted_cell_type, value = all_of(metric)) %>%
+                arrange(desc(value)) %>%
+                mutate(predicted_cell_type = factor(predicted_cell_type,
+                                                    levels = rev(predicted_cell_type)))
+            ggplot(sub_df, aes(x = value, y = predicted_cell_type,
+                               fill = predicted_cell_type)) +
+                geom_col(show.legend = FALSE) +
+                scale_fill_manual(values = ct_colors_map) +
+                labs(title = metric, x = NULL, y = NULL) +
+                theme_minimal(base_size = 8) +
+                theme(plot.title = element_text(size = 8, face = "bold"),
+                      axis.text.y = element_text(size = 7))
+        })
+
+        morpho_ct_page <- wrap_plots(p_morpho_ct, ncol = 3) +
+            plot_annotation(
+                title    = "Morphological Metrics by Cell Type",
+                subtitle = "Mean value per cell type (averaged across methods with available boundaries)",
+                theme    = theme(plot.title = element_text(size = 11, face = "bold"))
+            )
+
+        morpho_ct_pdf <- sub("\\.pdf$", "_morpho_ct.pdf", morpho_page_pdf)
+        pdf(morpho_ct_pdf, width = 11, height = 14)
+            print(morpho_ct_page)
+        dev.off()
+        cat(sprintf("[INFO] Morpho-by-celltype page saved: %s\n", morpho_ct_pdf))
     }
 }
 
