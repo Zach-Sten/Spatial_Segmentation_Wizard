@@ -315,6 +315,24 @@ def _predict_and_save(clf, le, gene_list, query_path: Path, output_dir: Path, sa
     explorer_df.to_csv(explorer_csv, index=False)
     print(f"[INFO] Saved Xenium Explorer annotations: {explorer_csv.name}")
 
+    # Confidence CSV — same cell_id column, group = confidence rounded to nearest 0.05,
+    # color = inferno hex (dark=low confidence, yellow=high confidence)
+    import matplotlib.cm as cm
+    inferno = cm.get_cmap("inferno")
+    conf_vals = query.obs["predicted_cell_type_confidence"].values
+    conf_rounded = (np.round(conf_vals / 0.05) * 0.05).clip(0.0, 1.0)
+
+    def _inferno_hex(v):
+        r, g, b, _ = inferno(float(v))
+        return "#{:02X}{:02X}{:02X}".format(int(r * 255), int(g * 255), int(b * 255))
+
+    conf_df = explorer_df[["cell_id"]].copy()
+    conf_df["group"] = [f"{v:.2f}" for v in conf_rounded]
+    conf_df["color"] = [_inferno_hex(v) for v in conf_rounded]
+    conf_csv = output_dir / f"{sample_id}_xenium_explorer_confidence.csv"
+    conf_df.to_csv(conf_csv, index=False)
+    print(f"[INFO] Saved Xenium Explorer confidence: {conf_csv.name}")
+
     counts_series = pd.Series(labels).value_counts()
     for ct, n in counts_series.items():
         bar = "█" * int(30 * n / len(labels))
