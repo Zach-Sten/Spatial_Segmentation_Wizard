@@ -347,17 +347,20 @@ def export_to_explorer(sample_dir: Path, output_dir: Path, sample_id: str,
     )
     print("[INFO] Explorer export complete.")
 
-    # h5ad already has integer obs_names (set above); write it out
-    # Keep original barcodes in obs["barcode"] for reference
-    import pandas as pd
-    sopa_indices = [str(i) for i in range(len(adata))]
-    adata.obs["barcode"] = adata.obs_names.astype(str)
-    adata.obs_names = sopa_indices
+    # adata already has integer obs_names and obs["barcode"] set above — write h5ad
     h5ad_path = output_dir / f"{sample_id}.h5ad"
     adata.write_h5ad(h5ad_path)
-    print(f"[INFO] h5ad re-saved with sopa integer obs_names ({len(adata)} cells)")
+    print(f"[INFO] h5ad saved with integer obs_names ({len(adata)} cells)")
 
-    # Save barcode → sopa_index mapping for classifier
+    # Rewrite cell_boundaries.parquet with integer cell_ids so QC can match it to the h5ad
+    import pandas as pd
+    gdf_out = gdf.copy()
+    gdf_out["cell_id"] = integer_ids
+    gdf_out = gdf_out.set_index("cell_id")
+    gdf_out.to_parquet(output_dir / "cell_boundaries.parquet")
+    print(f"[INFO] cell_boundaries.parquet rewritten with integer cell_ids ({len(gdf_out)} cells)")
+
+    # Save barcode → sopa_index mapping for reference
     sopa_order = pd.DataFrame({
         "obs_name": adata.obs["barcode"].values,
         "sopa_index": range(len(adata)),
