@@ -23,11 +23,11 @@ The pipeline wraps multiple segmentation methods behind a single interactive wiz
 ## Current Status
 
 **Working:**
-- **ProSeg** — probabilistic segmentation, full Explorer export
-- **Baysor** — Bayesian transcript-based segmentation, dask-parallelized
+- **ProSeg** — probabilistic segmentation, full Explorer export (https://www.nature.com/articles/s41592-025-02697-0)
+- **Baysor** — Bayesian transcript-based segmentation, dask-parallelized (https://www.nature.com/articles/s41587-021-01044-w)
 - **Xenium baseline** — native Xenium segmentation loaded as reference
-- **Fastreseg** - R based program that uses a reference dataset to match cell types
-- **Cellpose** - neural net model to fit segmentation boundaries by expansion of nuclear mask
+- **Fastreseg** - R based program that uses a reference dataset to match cell types (https://www.nature.com/articles/s41598-025-08733-5)
+- **Cellpose** - neural net model to fit segmentation boundaries by expansion of nuclear mask (https://www.nature.com/articles/s41592-020-01018-x)
 - **QC report** — automated 4-page PDF comparing all methods, emailed on completion
   - Basic metrics: cell count, genes/cell, counts/cell, % transcripts captured
   - Morphological metrics: cell area, elongation, circularity, compactness, eccentricity, solidity, convexity, density, nuclear ratio
