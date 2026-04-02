@@ -362,6 +362,32 @@ def wizard():
             if "image_patch_width" in METHOD_DEFAULTS[m]["params"]:
                 METHOD_DEFAULTS[m]["params"]["image_patch_width"] = image_patch_width
 
+    # Ask Baysor prior if selected
+    if "baysor" in selected:
+        print()
+        print(f"  {BOLD}Baysor prior segmentation{RESET}")
+        prior_options = [
+            ("cell_boundaries",    "Xenium native (default) — use native Xenium cell boundaries"),
+            ("cellpose_boundaries","Cellpose — use cellpose output as prior (requires cellpose)"),
+            ("none",               "No prior — transcript-only, experimental"),
+        ]
+        for i, (key, desc) in enumerate(prior_options, 1):
+            default_marker = f"  {DIM}← default{RESET}" if i == 1 else ""
+            print(f"    {i}. {desc}{default_marker}")
+        raw = prompt("  Choice [1-3]", default="1").strip() or "1"
+        try:
+            idx = int(raw) - 1
+            prior_key = prior_options[idx][0] if 0 <= idx < len(prior_options) else "cell_boundaries"
+        except (ValueError, IndexError):
+            prior_key = "cell_boundaries"
+        if prior_key == "none":
+            METHOD_DEFAULTS["baysor"]["params"].pop("prior_shapes_key", None)
+            print(f"  {CHECK} Baysor prior: {BOLD}none (transcript-only){RESET}")
+        else:
+            METHOD_DEFAULTS["baysor"]["params"]["prior_shapes_key"] = prior_key
+            print(f"  {CHECK} Baysor prior: {BOLD}{prior_key}{RESET}")
+        print(f"  {DIM}Tip: if Baysor fails, try decreasing patch sizes first; as a fallback, rerun with no prior.{RESET}")
+
     # Ask FastReseg source method if selected
     fastreseg_source = "xenium"
     if "fastreseg" in selected:

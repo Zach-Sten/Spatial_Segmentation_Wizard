@@ -75,7 +75,7 @@ def main():
         image_patch_width=params.get("image_patch_width", 1200),
         image_patch_overlap=params.get("patch_overlap", 10),
         transcript_patch_width=params.get("patch_width", 500),
-        prior_shapes_key=params.get("prior_shapes_key", "cell_boundaries"),
+        prior_shapes_key=params.get("prior_shapes_key", None),
     )
 
     n_tiles = len(sdata.shapes.get("transcripts_patches", []))
