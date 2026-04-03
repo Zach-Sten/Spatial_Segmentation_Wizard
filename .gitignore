@@ -6,7 +6,7 @@ config/pipeline_*_2*.yaml
 
 # Runtime outputs
 segmentation_results/
-
+reference_data/
 # Notebooks (kept local, not tracked)
 notebooks/
 
