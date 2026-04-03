@@ -150,15 +150,44 @@ print('CPSAM model cached OK')
   $ENV_PIP install torch_scatter -f https://data.pyg.org/whl/torch-${TORCH_VERSION}+cu124.html \
     || echo "WARNING: torch_scatter install failed — Segger may not work"
 
-  # RAPIDS (cuDF/cuML/cuGraph) — pip wheels to avoid conda solver conflicts with Python 3.10
-  # rapids=24.12 conda package requires Python 3.11+; pip wheels support 3.10 with CUDA 12.x
-  # Using 24.10 (last release with Python 3.10 support)
+  # RAPIDS (cuDF/cuML/cuGraph) — required by Segger
   $ENV_PIP install \
     cudf-cu12==24.10.* \
     cuml-cu12==24.10.* \
     cugraph-cu12==24.10.* \
     --extra-index-url=https://pypi.nvidia.com \
     || echo "WARNING: RAPIDS install failed — Segger GPU features may not work"
+
+  # Patch cudf so it imports gracefully on CPU-only nodes.
+  # Problem: cudf/__init__.py calls validate_setup() which does a hard GPU check and raises
+  # CUDARuntimeError if no GPU driver is present. datashader (pulled in by xrspatial →
+  # spatialdata) hard-imports cudf at module level, so every non-GPU job crashes on
+  # "import spatialdata" even though it never uses the GPU.
+  # Fix: make validate_setup() warn instead of raise when the driver check fails.
+  $ENV_PYTHON - <<'PYEOF'
+import site, pathlib
+patched = False
+for sp in site.getsitepackages():
+    p = pathlib.Path(sp) / "cudf" / "utils" / "gpu_utils.py"
+    if not p.exists():
+        continue
+    txt = p.read_text()
+    old = "except CUDARuntimeError as e:\n        raise e"
+    new = (
+        "except CUDARuntimeError as e:\n"
+        "        import warnings as _w\n"
+        "        _w.warn(f'cudf: GPU unavailable ({e}). GPU features disabled.')\n"
+        "        return"
+    )
+    if old in txt and "GPU unavailable" not in txt:
+        txt = txt.replace(old, new, 1)
+        p.write_text(txt)
+        print(f"[INFO] Patched cudf gpu_utils: {p}")
+        patched = True
+    break
+if not patched:
+    print("[WARN] cudf gpu_utils patch not applied — pattern not found or already patched")
+PYEOF
 
   # Segger — graph neural network segmentation (install from source)
   git clone https://github.com/dpeerlab/segger.git /opt/segger-src
