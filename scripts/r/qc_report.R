@@ -272,12 +272,19 @@ if (length(all_annot_morpho) > 0) {
                 select(predicted_cell_type, method, value = all_of(metric)) %>%
                 filter(!is.na(value)) %>%
                 mutate(predicted_cell_type = factor(predicted_cell_type, levels = ct_order))
-            # Clip x-axis to outermost whisker bounds (Q1 - 1.5*IQR, Q3 + 1.5*IQR)
-            q1  <- quantile(sub_df$value, 0.25, na.rm = TRUE)
-            q3  <- quantile(sub_df$value, 0.75, na.rm = TRUE)
-            iqr <- q3 - q1
-            wlo <- max(min(sub_df$value, na.rm = TRUE), q1 - 1.5 * iqr)
-            whi <- min(max(sub_df$value, na.rm = TRUE), q3 + 1.5 * iqr)
+            # Clip x-axis to the outermost actual whisker tip across every group.
+            # Compute per (cell_type × method) whisker endpoints, then take global min/max.
+            wb <- sub_df %>%
+                group_by(predicted_cell_type, method) %>%
+                summarise(
+                    lo = max(min(value, na.rm = TRUE),
+                             quantile(value, 0.25, na.rm = TRUE) - 1.5 * IQR(value, na.rm = TRUE)),
+                    hi = min(max(value, na.rm = TRUE),
+                             quantile(value, 0.75, na.rm = TRUE) + 1.5 * IQR(value, na.rm = TRUE)),
+                    .groups = "drop"
+                )
+            wlo <- min(wb$lo, na.rm = TRUE)
+            whi <- max(wb$hi, na.rm = TRUE)
             ggplot(sub_df, aes(x = value, y = predicted_cell_type, fill = method)) +
                 geom_boxplot(outlier.shape = NA, linewidth = 0.35,
                              position = position_dodge(preserve = "single")) +
@@ -623,12 +630,12 @@ if (has_segger) {
                                   color = method, group = method)) +
             geom_line(linewidth = 0.8) +
             geom_point(size = 1.5) +
-            geom_ribbon(aes(ymin = average_mecr - sqrt(variance_mecr),
-                            ymax = average_mecr + sqrt(variance_mecr),
-                            fill = method), alpha = 0.15, color = NA) +
+            geom_ribbon(aes(ymin = average_mecr - sqrt(variance_mecr / num_cells),
+                            ymax = average_mecr + sqrt(variance_mecr / num_cells),
+                            fill = method), alpha = 0.25, color = NA) +
             scale_fill_manual(values = ditto_colors) +
             scale_color_manual(values = ditto_colors) +
-            coord_cartesian(xlim = c(0, 250), ylim = c(0, NA)) +
+            coord_cartesian(ylim = c(0, NA)) +
             labs(title = "MECR vs Cell Area",
                  x = "Average Cell Area", y = "Average MECR", color = "Method") +
             theme_minimal(base_size = 11) +
