@@ -31,8 +31,10 @@ cv_label <- ""
 if (length(args) >= 7 && file.exists(args[7])) {
     cv <- tryCatch(fromJSON(args[7]), error = function(e) NULL)
     if (!is.null(cv)) {
+        features <- if (isTRUE(cv$use_rank)) "rank counts" else "raw counts"
         cv_label <- sprintf(
-            "CV: Accuracy=%.1f%%  Bal.Acc=%.1f%%  Macro-F1=%.1f%%",
+            "CV (%s): Accuracy=%.1f%%  Bal.Acc=%.1f%%  Macro-F1=%.1f%%",
+            features,
             cv$accuracy          * 100,
             cv$balanced_accuracy * 100,
             cv$f1_macro          * 100

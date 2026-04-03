@@ -119,7 +119,7 @@ def align_genes(ref, query):
 
 # ── Classifier ───────────────────────────────────────────────────────────────
 
-def train_classifier(X_train, y_train, use_gpu=False, cache_dir: Path = None):
+def train_classifier(X_train, y_train, use_gpu=False, cache_dir: Path = None, use_rank: bool = True):
     """
     Encode labels and train XGBoost on rank-transformed reference data.
 
@@ -159,6 +159,7 @@ def train_classifier(X_train, y_train, use_gpu=False, cache_dir: Path = None):
         "accuracy":          float(cv_results["test_accuracy"].mean()),
         "balanced_accuracy": float(cv_results["test_balanced_accuracy"].mean()),
         "f1_macro":          float(cv_results["test_f1_macro"].mean()),
+        "use_rank":          use_rank,
     }
     print(
         f"[INFO] CV accuracy={cv_metrics['accuracy']:.3f}  "
@@ -465,7 +466,7 @@ def main():
         X_train = transform_fn(ref, desc="Reference")
         y_train = ref.obs[args.celltype_col].astype(str).values
 
-        clf, le = train_classifier(X_train, y_train, use_gpu=args.gpu, cache_dir=cache_dir)
+        clf, le = train_classifier(X_train, y_train, use_gpu=args.gpu, cache_dir=cache_dir, use_rank=args.use_rank)
         gene_list = list(ref.var_names)
         print(f"[INFO] Classes ({len(le.classes_)}): {', '.join(le.classes_)}")
 
