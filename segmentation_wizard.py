@@ -818,7 +818,7 @@ def generate_and_submit(cfg, config_path, do_submit=False):
     # ── ONE classifier job — trains once, predicts on every *_reseg h5ad found ──
     classify_id = None
     if run_classifier:
-        content = generate_classifier_script(cfg, config_path)
+        content = generate_classifier_script(cfg, config_path, sample_ids=[s.sample_id for s in samples])
         fname = "submit_classify_all.sh"
         spath = out_path / fname
         with open(spath, "w") as f:

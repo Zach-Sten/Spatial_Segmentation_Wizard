@@ -393,10 +393,14 @@ def main():
                         help="Ignore cached model and retrain from scratch")
     parser.add_argument("--no-rank",      action="store_true",
                         help="Use log1p-normalized counts instead of rank transformation")
+    parser.add_argument("--sample-ids",   nargs="+", default=None,
+                        help="Restrict discovery to these sample IDs (space-separated). "
+                             "If omitted, all *_reseg h5ads under data-dir are used.")
     args = parser.parse_args()
     args.use_rank = not args.no_rank
 
     data_dir = Path(args.data_dir)
+    allowed_samples = set(args.sample_ids) if args.sample_ids else None
 
     # Discover all reseg h5ads anywhere under data_dir.
     # Pattern: {anything}*_reseg/{sample_id}/{sample_id}.h5ad
@@ -410,6 +414,8 @@ def main():
             if not sample_dir.is_dir():
                 continue
             sample_id = sample_dir.name
+            if allowed_samples and sample_id not in allowed_samples:
+                continue
             h5ad = sample_dir / f"{sample_id}.h5ad"
             if h5ad.exists():
                 queries[f"{method}/{sample_id}"] = (h5ad, sample_dir, method, sample_id)

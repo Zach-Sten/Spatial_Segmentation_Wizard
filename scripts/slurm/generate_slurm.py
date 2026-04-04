@@ -202,6 +202,7 @@ def generate_slurm_script(
 def generate_classifier_script(
     cfg: dict,
     config_path: str,
+    sample_ids: list = None,
 ) -> str:
     """Generate ONE SLURM script that trains the classifier once on the reference
     and predicts on every *_reseg/**/*.h5ad found under data_dir — covering all
@@ -267,7 +268,8 @@ def generate_classifier_script(
     celltype_col = cfg.get("data", {}).get("reference_celltype_col", "") or method_cfg["params"].get("reference_celltype_col", "cell_type")
     gpu_flag     = " --gpu"      if slurm.get("gpu", False)                       else ""
     retrain_flag = " --retrain"  if method_cfg["params"].get("retrain", False)     else ""
-    no_rank_flag = " --no-rank"  if not method_cfg["params"].get("use_rank", True) else ""
+    no_rank_flag    = " --no-rank"  if not method_cfg["params"].get("use_rank", True) else ""
+    sample_ids_flag = (" --sample-ids " + " ".join(sample_ids)) if sample_ids else ""
 
     py_args = (
         f"    {python_bin} {python_script} "
@@ -277,6 +279,7 @@ def generate_classifier_script(
         f"{gpu_flag}"
         f"{retrain_flag}"
         f"{no_rank_flag}"
+        f"{sample_ids_flag}"
     )
 
     lines += [
