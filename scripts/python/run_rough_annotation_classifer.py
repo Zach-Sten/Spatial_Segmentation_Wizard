@@ -146,14 +146,19 @@ def train_classifier(X_train, y_train, use_gpu=False, cache_dir: Path = None, us
         random_state=42,
     )
 
-    # Cross-val sanity check — multiple metrics
-    print("[INFO] Running 3-fold cross-validation on reference data...")
+    # Cross-val: run all 3 folds in parallel. Divide available CPUs evenly across folds
+    # so each XGBoost instance gets floor(n_cpus / 3) threads — no oversubscription,
+    # no idle cores. Final fit then uses all CPUs.
+    n_cpus = os.cpu_count() or 1
+    threads_per_fold = max(1, n_cpus // 3)
+    cv_xgb_params = {**xgb_params, "n_jobs": threads_per_fold}
+    print(f"[INFO] Running 3-fold cross-validation ({n_cpus} CPUs, {threads_per_fold} threads/fold, 3 folds in parallel)...")
     cv_results = cross_validate(
-        xgb.XGBClassifier(**xgb_params),
+        xgb.XGBClassifier(**cv_xgb_params),
         X_train, y_enc,
         cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
         scoring=["accuracy", "balanced_accuracy", "f1_macro"],
-        n_jobs=1,  # XGBoost already parallelizes; avoid nested parallelism
+        n_jobs=3,
     )
     cv_metrics = {
         "accuracy":          float(cv_results["test_accuracy"].mean()),

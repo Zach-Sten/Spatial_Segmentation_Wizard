@@ -491,7 +491,7 @@ def wizard():
         classifier_use_rank = True
     cfg["methods"]["classifier"] = {
         "enabled": run_classifier,
-        "slurm": {"mem": "100G", "cpus_per_task": 8, "gpu": classifier_gpu, "time": "0-06:00:00"},
+        "slurm": {"mem": "100G", "cpus_per_task": 8, "gpu": classifier_gpu, "time": "1-00:00:00"},
         "params": {
             "retrain":   classifier_retrain,
             "use_rank":  classifier_use_rank,

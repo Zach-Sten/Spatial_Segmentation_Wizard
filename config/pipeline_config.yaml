@@ -178,7 +178,7 @@ methods:
       mem: "100G"
       cpus_per_task: 8
       gpu: true
-      time: "0-06:00:00"
+      time: "1-00:00:00"
     params:
       retrain: false
 
