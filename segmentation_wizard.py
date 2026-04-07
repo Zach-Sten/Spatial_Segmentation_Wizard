@@ -447,6 +447,7 @@ def wizard():
     run_classifier = False
     classifier_gpu = False
     classifier_retrain = False
+    classifier_use_rank = True
     if cfg["data"].get("reference_path"):
         run_classifier = prompt_yn("Classify cell types?", default=False)
         if run_classifier:
