@@ -247,15 +247,11 @@ def wizard():
 
     data_mode = prompt_choice(
         "Data mode:",
-        ["experiment (all slides)", "slide (multiple samples)", "single sample"],
-        default="experiment (all slides)",
+        ["slide (multiple samples)", "single sample"],
+        default="slide (multiple samples)",
     )
 
-    if data_mode.startswith("experiment"):
-        cfg["data"]["experiment_dir"] = path_prompt(
-            "Experiment directory path", must_exist=True
-        )
-    elif data_mode.startswith("slide"):
+    if data_mode.startswith("slide"):
         cfg["data"]["slide_dir"] = path_prompt(
             "Slide directory path (folder containing multiple sample sub-folders)", must_exist=True
         )
@@ -462,13 +458,10 @@ def wizard():
 
             # Check if a cached model already exists for this data_dir
             _output_base = cfg.get("paths", {}).get("output_base_override", "")
-            _exp_dir     = cfg["data"].get("experiment_dir", "")
             _slide_dir   = cfg["data"].get("slide_dir", "")
             _smp_dir     = cfg["data"].get("sample_dir", "")
             if _output_base:
                 _data_dir = Path(_output_base)
-            elif _exp_dir:
-                _data_dir = Path(_exp_dir)
             elif _slide_dir:
                 _data_dir = Path(_slide_dir)
             else:
