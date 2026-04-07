@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.config_loader import (
     load_config, discover_samples, get_method_config,
     get_output_base_override, get_container_path, list_enabled_methods,
-    SampleInfo,
+    is_slide_mode, SampleInfo,
 )
 
 # Method → Python script path (relative to project root)
@@ -219,6 +219,8 @@ def generate_classifier_script(
         data_dir = output_base
     elif data.get("experiment_dir"):
         data_dir = data["experiment_dir"]
+    elif data.get("slide_dir"):
+        data_dir = data["slide_dir"]
     else:
         # single sample mode: parent slide dir holds the *_reseg dirs
         data_dir = str(Path(data["sample_dir"]).parent)
@@ -299,6 +301,113 @@ def generate_classifier_script(
         "echo '============================================'",
         "",
         f"singularity exec {nv_flag}{bind_flag} \\",
+        f"    {container} \\",
+        py_args,
+        "",
+        "EXIT_CODE=$?",
+        "echo \"Finished: $(date)  Exit code: $EXIT_CODE\"",
+        "exit $EXIT_CODE",
+    ]
+
+    return "\n".join(lines)
+
+
+def generate_multi_qc_script(
+    cfg: dict,
+    config_path: str,
+    samples: list,
+) -> str:
+    """Generate ONE SLURM script that runs multi-sample QC on all samples in a slide.
+
+    Passes --multi-sample --sample-ids id1 id2 ... --sample-dirs dir1 dir2 ...
+    to run_qc.py, which concatenates h5ads across samples before computing QC.
+    """
+    method_cfg = get_method_config(cfg, "cellspa_qc")
+    slurm = method_cfg["slurm"]
+    container = get_container_path(cfg)
+    output_base = get_output_base_override(cfg)
+    pipeline_root = str(Path(config_path).resolve().parent.parent)
+
+    # All samples share the same slide_dir
+    slide_dir = str(samples[0].slide_dir)
+    slide_name = samples[0].slide_name
+
+    log_dir = Path(pipeline_root) / "logs" / slide_name
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    job_name = f"seg_qc_combined_{slide_name}"
+    python_script = METHOD_SCRIPTS["cellspa_qc"]
+
+    lines = [
+        "#!/bin/bash",
+        f"#SBATCH --job-name={job_name}",
+        f"#SBATCH --output={log_dir}/%x_%j.out",
+        f"#SBATCH --error={log_dir}/%x_%j.err",
+        f"#SBATCH --time={slurm.get('time', '0-12:00:00')}",
+        f"#SBATCH --nodes={slurm.get('nodes', 1)}",
+        f"#SBATCH --ntasks={slurm.get('ntasks', 1)}",
+        f"#SBATCH --cpus-per-task={slurm.get('cpus_per_task', 4)}",
+        f"#SBATCH --mem={slurm.get('mem', '100G')}",
+    ]
+
+    partition = slurm.get("partition")
+    if partition:
+        lines.append(f"#SBATCH --partition={partition}")
+    account = slurm.get("account")
+    if account:
+        lines.append(f"#SBATCH --account={account}")
+    if slurm.get("email"):
+        lines.append(f"#SBATCH --mail-user={slurm['email']}")
+        lines.append(f"#SBATCH --mail-type={slurm.get('mail_type', 'END,FAIL')}")
+
+    sample_ids_str   = " ".join(s.sample_id  for s in samples)
+    sample_dirs_str  = " ".join(str(s.sample_dir) for s in samples)
+
+    ref_path = cfg.get("data", {}).get("reference_path", "")
+    ref_arg  = f" --reference-path {ref_path}" if ref_path else ""
+
+    bind_paths = set()
+    bind_paths.add(slide_dir)
+    bind_paths.add(str(log_dir))
+    bind_paths.add(str(Path(config_path).resolve().parent))
+    bind_paths.add(pipeline_root)
+    for s in samples:
+        bind_paths.add(str(s.sample_dir))
+    if ref_path:
+        bind_paths.add(str(Path(ref_path).parent))
+    if output_base:
+        bind_paths.add(output_base)
+    bind_flag = " ".join(f"--bind {p}" for p in sorted(bind_paths))
+
+    python_bin = "/opt/miniforge3/envs/spatial_segmentation_env/bin/python -u"
+
+    py_args = (
+        f"    {python_bin} {python_script} "
+        f"--config {config_path} "
+        f"--slide-dir {slide_dir} "
+        f"--multi-sample "
+        f"--sample-ids {sample_ids_str} "
+        f"--sample-dirs {sample_dirs_str}"
+        f"{ref_arg}"
+    )
+
+    lines += [
+        "",
+        f"# MULTI-SAMPLE QC — {slide_name}",
+        f"# Samples: {sample_ids_str}",
+        "",
+        f"mkdir -p {log_dir}",
+        "",
+        f"cd {pipeline_root}",
+        "",
+        "echo '============================================'",
+        f"echo '  MULTI-SAMPLE QC — {slide_name}'",
+        f"echo '  Samples: {sample_ids_str}'",
+        "echo \"  Job: $SLURM_JOB_ID  Node: $(hostname)\"",
+        "echo \"  Start: $(date)\"",
+        "echo '============================================'",
+        "",
+        f"singularity exec {bind_flag} \\",
         f"    {container} \\",
         py_args,
         "",

@@ -31,9 +31,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scripts"))
 
 from utils.config_loader import (
     load_config, discover_samples, list_enabled_methods,
-    get_method_config, get_output_base_override, SampleInfo,
+    get_method_config, get_output_base_override, is_slide_mode, SampleInfo,
 )
-from slurm.generate_slurm import generate_slurm_script, METHOD_SCRIPTS
+from slurm.generate_slurm import generate_slurm_script, generate_multi_qc_script, METHOD_SCRIPTS
 
 
 def submit_job(script_path: str, dependency_ids: list = None) -> str:
@@ -66,6 +66,7 @@ def main():
 
     cfg = load_config(args.config)
     samples = discover_samples(cfg)
+    multi_sample = is_slide_mode(cfg)
 
     # ── List mode ──
     if args.list:
@@ -107,7 +108,8 @@ def main():
     print(f"  QC:        {'yes' if run_qc else 'no'}")
     print(f"  Submit:    {'YES' if args.submit else 'DRY RUN'}")
 
-    total_jobs = len(samples) * (len(primary) + len(post) + (1 if run_qc else 0))
+    qc_jobs = 1 if (run_qc and multi_sample) else len(samples) if run_qc else 0
+    total_jobs = len(samples) * (len(primary) + len(post)) + qc_jobs
     print(f"  Jobs:      {total_jobs}")
     print("=" * 65)
 
@@ -176,8 +178,8 @@ def main():
                 else:
                     print(f"  [OK] {fname}")
 
-            # ── QC (depends on all seg + post) ──
-            if run_qc:
+            # ── Per-sample QC (single/experiment mode only) ──
+            if run_qc and not multi_sample:
                 content = generate_slurm_script(cfg, "cellspa_qc", sample, args.config)
                 fname = f"submit_qc_{sample.sample_id}.sh"
                 script_path = out_path / fname
@@ -193,6 +195,23 @@ def main():
                         print(f"  [OK] {sample.sample_id} / qc → job {jid} (after segmentation)")
                 else:
                     print(f"  [OK] {fname}")
+
+    # ── Combined QC (slide/multi-sample mode) ──
+    if run_qc and multi_sample:
+        content = generate_multi_qc_script(cfg, args.config, samples)
+        fname = "submit_qc_combined.sh"
+        script_path = out_path / fname
+        with open(script_path, "w") as f:
+            f.write(content)
+        os.chmod(script_path, 0o755)
+        all_scripts.append(script_path)
+
+        if args.submit:
+            jid = submit_job(script_path)
+            if jid:
+                print(f"  [OK] qc/combined → job {jid}")
+        else:
+            print(f"  [OK] {fname}")
 
     # ── Final summary ──
     print("\n" + "=" * 65)

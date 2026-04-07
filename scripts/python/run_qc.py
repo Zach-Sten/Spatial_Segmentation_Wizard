@@ -804,6 +804,213 @@ def generate_pdf_report(comparison_csv: Path, qc_dir: Path, sample_id: str, guid
     return pdf_path
 
 
+def _run_multi_sample_qc(args):
+    """Run QC on concatenated h5ads from multiple samples under a single slide_dir."""
+    import scanpy as sc
+    import scipy.sparse as sp
+
+    cfg = load_config(args.config)
+    method_cfg = get_method_config(cfg, "cellspa_qc")
+    output_base = get_output_base_override(cfg)
+
+    slide_dir = Path(args.slide_dir)
+    sample_ids = args.sample_ids or []
+    sample_dirs_map = {}  # sample_id → raw sample dir Path
+    if args.sample_dirs:
+        for sid, sdir in zip(sample_ids, args.sample_dirs):
+            sample_dirs_map[sid] = Path(sdir)
+
+    base_dir = Path(output_base) / slide_dir.name if output_base else slide_dir
+    qc_dir = base_dir / "qc" / "combined"
+    qc_dir.mkdir(parents=True, exist_ok=True)
+
+    configure_threads()
+    t_start = time.time()
+
+    n = len(sample_ids)
+    label = ", ".join(sample_ids)
+    print("=" * 60)
+    print(f"  Multi-Sample QC — {n} samples: {label}")
+    print(f"  Slide: {slide_dir}")
+    print(f"  Output: {qc_dir}")
+    print("=" * 60)
+
+    # Discover completed methods across all samples
+    methods_multi = discover_completed_methods_multi(slide_dir, sample_ids, output_base)
+    print(f"[INFO] Methods found: {', '.join(methods_multi.keys()) or 'none'}")
+
+    # Build method_data: {method: (concatenated_adata, representative_output_dir)}
+    method_data = {}
+
+    # --- Xenium baselines (concatenate across samples) ---
+    baseline_adatas = []
+    for sid in sample_ids:
+        raw_dir = sample_dirs_map.get(sid)
+        if raw_dir:
+            bl = load_xenium_baseline(raw_dir)
+            if bl is not None:
+                bl.obs["sample_id"] = sid
+                baseline_adatas.append((sid, bl))
+    if baseline_adatas:
+        if len(baseline_adatas) == 1:
+            combined_bl = baseline_adatas[0][1]
+        else:
+            combined_bl = sc.concat(
+                [a for _, a in baseline_adatas],
+                keys=[sid for sid, _ in baseline_adatas],
+                label="sample_id",
+                index_unique="-",
+            )
+        method_data["xenium"] = (combined_bl, sample_dirs_map.get(sample_ids[0]))
+        print(f"[INFO] Xenium baseline: {combined_bl.n_obs} cells (combined)")
+
+    # --- Reseg methods (concatenate across samples) ---
+    for method, sample_h5ads in methods_multi.items():
+        adatas = []
+        output_dirs = []
+        for sid in sample_ids:
+            if sid not in sample_h5ads:
+                print(f"[WARN] {method}: no h5ad for {sid} — skipping that sample")
+                continue
+            try:
+                a = sc.read_h5ad(sample_h5ads[sid])
+                a.obs["sample_id"] = sid
+                adatas.append((sid, a))
+                output_dirs.append(sample_h5ads[sid].parent)
+            except Exception as e:
+                print(f"[WARN] {method}/{sid}: could not load h5ad: {e}")
+
+        if not adatas:
+            continue
+
+        if len(adatas) == 1:
+            combined = adatas[0][1]
+        else:
+            combined = sc.concat(
+                [a for _, a in adatas],
+                keys=[sid for sid, _ in adatas],
+                label="sample_id",
+                index_unique="-",
+            )
+        method_data[method] = (combined, output_dirs[0])
+        print(f"[INFO] {method}: {combined.n_obs} cells (combined from {len(adatas)} samples)")
+
+    if not method_data:
+        print("[WARN] No data found for any method — nothing to QC")
+        save_run_metadata(qc_dir, "qc", method_cfg, time.time() - t_start)
+        return
+
+    # --- Annotation CSVs: concatenate from each sample (with sample-prefixed cell IDs) ---
+    import shutil as _shutil
+    for method, (adata, output_dir) in method_data.items():
+        all_annot_rows = []
+        for sid in sample_ids:
+            if method == "xenium":
+                annot_csv = base_dir / "xenium_export_reseg" / sid / f"{sid}_predicted_celltypes.csv"
+            else:
+                method_reseg = base_dir / f"{method}_reseg" / sid
+                annot_csv = method_reseg / f"{sid}_predicted_celltypes.csv"
+            if not annot_csv.exists():
+                continue
+            try:
+                df = pd.read_csv(annot_csv, index_col=0)
+                df.index = (sid + "-" + df.index.astype(str)).astype(str)
+                all_annot_rows.append(df)
+            except Exception as e:
+                print(f"[WARN] {method}/{sid} annotation CSV: {e}")
+
+        if all_annot_rows:
+            merged_annot = pd.concat(all_annot_rows)
+            merged_annot.to_csv(qc_dir / f"annotations_{method}.csv")
+            print(f"[INFO] Annotations merged for {method}: {len(merged_annot)} cells")
+            # Merge into adata.obs
+            adata.obs.index = adata.obs.index.astype(str)
+            merged_annot.index = merged_annot.index.astype(str)
+            for col in ["predicted_cell_type", "predicted_cell_type_confidence"]:
+                if col in merged_annot.columns:
+                    adata.obs[col] = merged_annot[col].reindex(adata.obs.index)
+
+    # Total transcripts (sum across all samples)
+    total_transcripts = None
+    _total = 0
+    for sid, raw_dir in sample_dirs_map.items():
+        t = count_total_transcripts(raw_dir)
+        if t:
+            _total += t
+    if _total > 0:
+        total_transcripts = _total
+        print(f"[INFO] Total transcripts (all samples): {total_transcripts:,}")
+
+    # Nucleus GDF is per-sample and spatial — skip for multi-sample concatenated QC
+    nucleus_gdf = None
+
+    cellspa_results = []
+    title_label = f"{n} samples"
+
+    for method, (adata, output_dir) in method_data.items():
+        print(f"\n── {method} ──")
+        print(f"[INFO] {adata.n_obs} cells × {adata.n_vars} genes")
+
+        @timed(f"CellSPA metrics: {method}")
+        def _cellspa():
+            return run_cellspa(adata, method, qc_dir)
+        success = _cellspa()
+
+        if success:
+            csv = qc_dir / f"cellspa_{method}.csv"
+            if csv.exists():
+                df = pd.read_csv(csv)
+                if total_transcripts:
+                    X = adata.X
+                    assigned = int(X.sum()) if sp.issparse(X) else int(np.sum(X))
+                    df["pct_transcripts_captured"] = round(100.0 * assigned / total_transcripts, 2)
+                    df.to_csv(csv, index=False)
+                cellspa_results.append(df)
+
+        @timed(f"Morphological metrics: {method}")
+        def _morpho():
+            # For multi-sample, skip per-method boundary loading — too complex to stitch
+            print(f"[INFO] Morphological metrics skipped in multi-sample mode for {method}")
+        _morpho()
+
+        generate_qc_plots(adata, method, qc_dir)
+
+    print("\n── Segger Metrics ──")
+    compute_segger_metrics(method_data, qc_dir, base_dir,
+                           reference_path=args.reference_path or "")
+
+    if cellspa_results:
+        comparison = pd.concat(cellspa_results, ignore_index=True)
+        comparison_csv = qc_dir / "cellspa_comparison.csv"
+        comparison.to_csv(comparison_csv, index=False)
+        print(f"\n── CellSPA Comparison ──")
+        print(comparison.to_string(index=False))
+
+        guide_dir = Path(__file__).parents[2] / "guide_pgs"
+        ref_path = args.reference_path or ""
+        if ref_path:
+            _ref_stem = Path(ref_path).stem
+            _cv_cache = base_dir / f"classifier_cache_{_ref_stem}"
+        else:
+            _cv_cache = base_dir / "classifier_cache"
+        cv_metrics_path = _cv_cache / "cv_metrics.json"
+
+        @timed("Generate PDF report")
+        def _pdf():
+            return generate_pdf_report(
+                comparison_csv, qc_dir,
+                f"Combined ({title_label})",
+                guide_dir,
+                cv_metrics_path=cv_metrics_path,
+            )
+        pdf_path = _pdf()
+        print(f"[INFO] Report: {pdf_path}")
+
+    elapsed = time.time() - t_start
+    save_run_metadata(qc_dir, "qc", method_cfg, elapsed)
+    print(f"\n[DONE] Multi-Sample QC — {title_label} — {elapsed / 60:.1f} min")
+
+
 @timed("Generate QC plots")
 def generate_qc_plots(adata, method_name: str, output_dir: Path):
     """Generate violin + scatter QC plots."""
@@ -1007,6 +1214,22 @@ def discover_completed_methods(slide_dir: Path, sample_id: str, output_base: str
     return found
 
 
+def discover_completed_methods_multi(slide_dir: Path, sample_ids: list, output_base: str) -> dict:
+    """Multi-sample: return {method: {sample_id: h5ad_path}} for all found results."""
+    base = Path(output_base) / slide_dir.name if output_base else slide_dir
+    result = {}
+    for reseg_dir in sorted(base.glob("*_reseg")):
+        method = reseg_dir.name.replace("_reseg", "")
+        if method == "xenium_export":
+            continue
+        for sample_id in sample_ids:
+            sd = reseg_dir / sample_id
+            h5ads = list(sd.glob("*.h5ad")) if sd.exists() else []
+            if h5ads:
+                result.setdefault(method, {})[sample_id] = h5ads[0]
+    return result
+
+
 def load_xenium_baseline(sample_dir: Path):
     """Load the original Xenium segmentation as a baseline AnnData.
 
@@ -1048,11 +1271,26 @@ def load_xenium_baseline(sample_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description="CellSPA QC — all completed segmentation methods")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--sample-id", required=True)
     parser.add_argument("--slide-dir", required=True, help="Slide folder containing {method}_reseg/ dirs")
-    parser.add_argument("--sample-dir", default=None, help="Raw sample dir (for % transcripts captured)")
     parser.add_argument("--reference-path", default=None, help="Reference h5ad path (to locate classifier cache)")
+    # Single-sample args
+    parser.add_argument("--sample-id", default=None)
+    parser.add_argument("--sample-dir", default=None, help="Raw sample dir (for % transcripts captured)")
+    # Multi-sample args
+    parser.add_argument("--multi-sample", action="store_true",
+                        help="Concatenate h5ads across all samples before QC")
+    parser.add_argument("--sample-ids", nargs="+", default=None,
+                        help="Sample IDs to include (multi-sample mode)")
+    parser.add_argument("--sample-dirs", nargs="*", default=None,
+                        help="Raw sample dirs, parallel to --sample-ids (for xenium baseline)")
     args = parser.parse_args()
+
+    if args.multi_sample:
+        _run_multi_sample_qc(args)
+        return
+
+    if not args.sample_id:
+        parser.error("--sample-id is required for single-sample mode (or use --multi-sample)")
 
     cfg = load_config(args.config)
     method_cfg = get_method_config(cfg, "cellspa_qc")

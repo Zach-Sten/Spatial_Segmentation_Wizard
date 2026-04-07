@@ -75,17 +75,18 @@ def load_config(config_path: str) -> dict:
 
     data = cfg["data"]
     has_experiment = bool(data.get("experiment_dir"))
+    has_slide = bool(data.get("slide_dir"))
     has_sample = bool(data.get("sample_dir"))
 
-    active_modes = sum([has_experiment, has_sample])
+    active_modes = sum([has_experiment, has_slide, has_sample])
     if active_modes == 0:
         raise ValueError(
-            "Config data section must set one of: experiment_dir or sample_dir"
+            "Config data section must set one of: experiment_dir, slide_dir, or sample_dir"
         )
     if active_modes > 1:
         raise ValueError(
             "Config data section has multiple modes set. "
-            "Use exactly ONE of: experiment_dir or sample_dir"
+            "Use exactly ONE of: experiment_dir, slide_dir, or sample_dir"
         )
 
     return cfg
@@ -174,6 +175,37 @@ def discover_samples(cfg: dict) -> List[SampleInfo]:
                         platform=platform,
                     ))
 
+    elif data.get("slide_dir"):
+        # Mode 2: Slide — direct child folders that look like raw samples
+        slide_dir = Path(data["slide_dir"]).resolve()
+        if not slide_dir.exists():
+            raise FileNotFoundError(f"Slide dir not found: {slide_dir}")
+
+        # Directories to skip — output/cache dirs are never raw samples
+        _skip_suffixes = ("_reseg",)
+        _skip_names    = {"qc", "logs"}
+        _skip_prefixes = ("classifier_cache", "cellspa_qc")
+
+        for sd in sorted(slide_dir.iterdir()):
+            if not sd.is_dir() or sd.name.startswith("."):
+                continue
+            if (sd.name.endswith(_skip_suffixes)
+                    or sd.name in _skip_names
+                    or any(sd.name.startswith(p) for p in _skip_prefixes)):
+                continue
+            # Recognize xenium samples by the presence of experiment.xenium
+            # (fall back to cell_feature_matrix/ for other platforms)
+            if not ((sd / "experiment.xenium").exists() or (sd / "cell_feature_matrix").exists()):
+                continue
+            if _matches_filters(sd.name, include, exclude):
+                samples.append(SampleInfo(
+                    sample_id=sd.name,
+                    sample_dir=sd.resolve(),
+                    slide_dir=slide_dir,
+                    slide_name=slide_dir.name,
+                    platform=platform,
+                ))
+
     elif data.get("sample_dir"):
         # Single sample
         sample_dir = Path(data["sample_dir"]).resolve()
@@ -242,6 +274,11 @@ def list_enabled_methods(cfg: dict) -> list:
         name for name, mcfg in cfg.get("methods", {}).items()
         if mcfg.get("enabled", True)
     ]
+
+
+def is_slide_mode(cfg: dict) -> bool:
+    """True when config uses slide_dir mode (multiple samples in one folder)."""
+    return bool(cfg.get("data", {}).get("slide_dir"))
 
 
 def ensure_sample_dirs(sample: SampleInfo, method: str, output_base: str = "") -> Path:

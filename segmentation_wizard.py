@@ -25,9 +25,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scripts"))
 
 from utils.config_loader import (
     load_config, discover_samples, list_enabled_methods,
-    get_method_config, get_output_base_override, SampleInfo,
+    get_method_config, get_output_base_override, is_slide_mode, SampleInfo,
 )
-from slurm.generate_slurm import generate_slurm_script, generate_classifier_script, METHOD_SCRIPTS
+from slurm.generate_slurm import (
+    generate_slurm_script, generate_classifier_script,
+    generate_multi_qc_script, METHOD_SCRIPTS,
+)
 
 
 # ============================================================================
@@ -243,12 +246,18 @@ def wizard():
     )
 
     data_mode = prompt_choice(
-        "Data mode:", ["experiment (all slides)", "single sample"], default="experiment (all slides)"
+        "Data mode:",
+        ["experiment (all slides)", "slide (multiple samples)", "single sample"],
+        default="experiment (all slides)",
     )
 
     if data_mode.startswith("experiment"):
         cfg["data"]["experiment_dir"] = path_prompt(
             "Experiment directory path", must_exist=True
+        )
+    elif data_mode.startswith("slide"):
+        cfg["data"]["slide_dir"] = path_prompt(
+            "Slide directory path (folder containing multiple sample sub-folders)", must_exist=True
         )
     else:
         cfg["data"]["sample_dir"] = path_prompt(
@@ -445,14 +454,23 @@ def wizard():
     if cfg["data"].get("reference_path"):
         run_classifier = prompt_yn("Classify cell types?", default=False)
         if run_classifier:
+            # Ask use_rank FIRST so the cache check can include it
+            classifier_use_rank = prompt_yn(
+                "Use rank-based feature matrix? (recommended; disable to use raw counts directly)",
+                default=True,
+            )
+
             # Check if a cached model already exists for this data_dir
             _output_base = cfg.get("paths", {}).get("output_base_override", "")
             _exp_dir     = cfg["data"].get("experiment_dir", "")
+            _slide_dir   = cfg["data"].get("slide_dir", "")
             _smp_dir     = cfg["data"].get("sample_dir", "")
             if _output_base:
                 _data_dir = Path(_output_base)
             elif _exp_dir:
                 _data_dir = Path(_exp_dir)
+            elif _slide_dir:
+                _data_dir = Path(_slide_dir)
             else:
                 _data_dir = Path(_smp_dir).parent
             _ref_path   = cfg["data"].get("reference_path", "")
@@ -465,11 +483,13 @@ def wizard():
                 if _cache_info.exists() and _ref_path:
                     import json as _json
                     _meta = _json.loads(_cache_info.read_text())
-                    _cached_ref = _meta.get("reference_path", "")
-                    _cached_col = _meta.get("celltype_col", "")
+                    _cached_ref  = _meta.get("reference_path", "")
+                    _cached_col  = _meta.get("celltype_col", "")
+                    _cached_rank = _meta.get("use_rank", True)
                     _cache_matches = (
-                        _cached_ref == str(Path(_ref_path).resolve()) and
-                        _cached_col == _ref_col
+                        _cached_ref  == str(Path(_ref_path).resolve()) and
+                        _cached_col  == _ref_col and
+                        _cached_rank == classifier_use_rank
                     )
                 else:
                     # No metadata — treat as stale when a reference is specified
@@ -480,12 +500,8 @@ def wizard():
                 if classifier_retrain:
                     print(f"  {DIM}Will retrain from scratch{RESET}")
             elif _cache.exists():
-                print(f"  {DIM}Cache exists but was trained on a different reference — will retrain{RESET}")
+                print(f"  {DIM}Cache exists but does not match current settings — will retrain{RESET}")
             classifier_gpu = prompt_yn("Use GPU for classifier (XGBoost)?", default=False)
-            classifier_use_rank = prompt_yn(
-                "Use rank-based feature matrix? (recommended; disable to use raw counts directly)",
-                default=True,
-            )
     else:
         print(f"  {DIM}Cell type classification skipped — no reference path provided{RESET}")
         classifier_use_rank = True
@@ -551,6 +567,9 @@ def print_config_review(cfg):
     if data.get("experiment_dir"):
         print(f"  {BOLD}Data mode:{RESET}   experiment")
         print(f"  {BOLD}Path:{RESET}        {data['experiment_dir']}")
+    elif data.get("slide_dir"):
+        print(f"  {BOLD}Data mode:{RESET}   slide (multiple samples)")
+        print(f"  {BOLD}Path:{RESET}        {data['slide_dir']}")
     elif data.get("sample_dir"):
         print(f"  {BOLD}Data mode:{RESET}   single sample")
         print(f"  {BOLD}Path:{RESET}        {data['sample_dir']}")
@@ -670,6 +689,8 @@ def generate_and_submit(cfg, config_path, do_submit=False):
     out_path = Path("scripts/slurm/generated")
     out_path.mkdir(parents=True, exist_ok=True)
 
+    multi_sample = is_slide_mode(cfg)
+
     by_slide = defaultdict(list)
     for s in samples:
         by_slide[s.slide_name].append(s)
@@ -691,27 +712,36 @@ def generate_and_submit(cfg, config_path, do_submit=False):
     notify_phone = notif.get("phone", "")
     has_notify   = bool(notify_email)
 
-    # QC PDF paths (one per sample — written by run_qc.py after all seg jobs finish)
+    # QC PDF paths (one per sample in single mode; one combined in multi-sample mode)
     output_base = get_output_base_override(cfg)
     qc_pdf_paths = []
-    for sample in samples:
-        qc_dir = (
-            (Path(output_base) / sample.slide_name / "qc" / sample.sample_id)
-            if output_base else
-            (sample.slide_dir / "qc" / sample.sample_id)
-        )
-        qc_pdf_paths.append(str(qc_dir / "qc_report.pdf"))
+    if multi_sample:
+        # All samples share one slide_dir → one combined PDF
+        slide_dir = samples[0].slide_dir
+        qc_base = (Path(output_base) / slide_dir.name if output_base else slide_dir)
+        qc_pdf_paths.append(str(qc_base / "qc" / "combined" / "qc_report.pdf"))
+    else:
+        for sample in samples:
+            qc_dir = (
+                (Path(output_base) / sample.slide_name / "qc" / sample.sample_id)
+                if output_base else
+                (sample.slide_dir / "qc" / sample.sample_id)
+            )
+            qc_pdf_paths.append(str(qc_dir / "qc_report.pdf"))
 
     classify_count = 1 if run_classifier else 0
     xenium_export_count = len(samples) if run_classifier else 0
-    total = (len(samples) * (len(primary) + len(post) + (1 if run_qc else 0))
-             + xenium_export_count + classify_count)
+    qc_count = 1 if run_qc else 0  # always 1 job (combined or per-sample loop is N but 1 in slide mode)
+    total = (len(samples) * (len(primary) + len(post))
+             + xenium_export_count + classify_count
+             + (len(samples) * qc_count if not multi_sample else qc_count))
 
     section("Job Generation")
+    qc_desc = " + 1 combined QC" if (run_qc and multi_sample) else (f" + QC" if run_qc else "")
     print(f"  {BOLD}{len(samples)}{RESET} sample(s) × {BOLD}{len(primary)}{RESET} method(s)" +
           (f" + {len(post)} post-hoc" if post else "") +
           (f" + xenium_export + 1 classifier (all samples)" if run_classifier else "") +
-          (f" + QC" if run_qc else "") +
+          qc_desc +
           f" = {BOLD}{total}{RESET} jobs\n")
 
     all_scripts = []
@@ -801,8 +831,8 @@ def generate_and_submit(cfg, config_path, do_submit=False):
                 else:
                     print(f"    {CHECK} submit_{method}_{sample.sample_id}.sh")
 
-            # Generate QC script now; submit after classifier
-            if run_qc:
+            # Per-sample QC only in single/experiment mode (multi_sample uses one combined job)
+            if run_qc and not multi_sample:
                 content = generate_slurm_script(cfg, "cellspa_qc", sample, config_path)
                 spath = out_path / f"submit_qc_{sample.sample_id}.sh"
                 with open(spath, "w") as f:
@@ -843,18 +873,40 @@ def generate_and_submit(cfg, config_path, do_submit=False):
             print(f"  {CHECK} {fname}")
         print()
 
-    # ── Pass 2: submit QC jobs (depend on seg + classifier) ──
-    if run_qc and do_submit:
+    # ── Pass 2: QC (depends on seg + classifier) ──
+    if run_qc:
         wait = all_seg_post_ids + ([classify_id] if classify_id else [])
-        for spath, sample in qc_scripts:
-            jid = submit_job(spath, dependency_ids=wait if wait else None)
-            if jid:
-                all_job_ids.append(jid)
-                chain_manifest["jobs"].append(
-                    {"method": "cellspa_qc", "sample_id": sample.sample_id, "job_id": jid}
-                )
-                print(f"    {CHECK} {sample.sample_id}/qc {ARROW} job {jid} {DIM}(after classifier){RESET}")
-        print()
+
+        if multi_sample:
+            # ONE combined QC job across all samples
+            content = generate_multi_qc_script(cfg, config_path, samples)
+            spath = out_path / "submit_qc_combined.sh"
+            with open(spath, "w") as f:
+                f.write(content)
+            os.chmod(spath, 0o755)
+            all_scripts.append(spath)
+            if do_submit:
+                jid = submit_job(spath, dependency_ids=wait if wait else None)
+                if jid:
+                    all_job_ids.append(jid)
+                    chain_manifest["jobs"].append(
+                        {"method": "cellspa_qc", "sample_id": "combined", "job_id": jid}
+                    )
+                    print(f"  {CHECK} qc/combined {ARROW} job {jid} {DIM}(after classifier){RESET}")
+            else:
+                print(f"  {CHECK} submit_qc_combined.sh")
+            print()
+        elif do_submit:
+            # Per-sample QC (single/experiment mode)
+            for spath, sample in qc_scripts:
+                jid = submit_job(spath, dependency_ids=wait if wait else None)
+                if jid:
+                    all_job_ids.append(jid)
+                    chain_manifest["jobs"].append(
+                        {"method": "cellspa_qc", "sample_id": sample.sample_id, "job_id": jid}
+                    )
+                    print(f"    {CHECK} {sample.sample_id}/qc {ARROW} job {jid} {DIM}(after classifier){RESET}")
+            print()
 
     # ── Chain notifications ──
     if do_submit and has_notify and all_job_ids:

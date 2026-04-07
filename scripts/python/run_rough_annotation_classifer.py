@@ -149,7 +149,7 @@ def train_classifier(X_train, y_train, use_gpu=False, cache_dir: Path = None, us
     # Cross-val: run all 3 folds in parallel. Divide available CPUs evenly across folds
     # so each XGBoost instance gets floor(n_cpus / 3) threads — no oversubscription,
     # no idle cores. Final fit then uses all CPUs.
-    n_cpus = os.cpu_count() or 1
+    n_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1))
     threads_per_fold = max(1, n_cpus // 3)
     cv_xgb_params = {**xgb_params, "n_jobs": threads_per_fold}
     print(f"[INFO] Running 3-fold cross-validation ({n_cpus} CPUs, {threads_per_fold} threads/fold, 3 folds in parallel)...")
