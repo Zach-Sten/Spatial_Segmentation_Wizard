@@ -37,6 +37,10 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Point keras to the pre-cached stardist models baked into the container
+    if "KERAS_HOME" not in os.environ:
+        os.environ["KERAS_HOME"] = "/opt/stardist_models"
+
     cpus = configure_threads()
     configure_dask(cpus)
     t_start = time.time()
