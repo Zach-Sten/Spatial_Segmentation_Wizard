@@ -240,12 +240,12 @@ for (method in as.character(method_levels)) {
     if (!file.exists(annot_path) || !file.exists(morpho_path)) next
     ann <- read.csv(annot_path,  stringsAsFactors = FALSE)
     mor <- read.csv(morpho_path, stringsAsFactors = FALSE)
-    if (!"predicted_cell_type" %in% colnames(ann)) next
+    if (!"pred_cell_type" %in% colnames(ann)) next
     if (!"cell_id" %in% colnames(ann)) ann$cell_id <- as.character(rownames(ann))
     if (!"cell_id" %in% colnames(mor)) mor$cell_id <- as.character(rownames(mor))
     ann$cell_id <- as.character(ann$cell_id)
     mor$cell_id <- as.character(mor$cell_id)
-    merged <- inner_join(ann[, c("cell_id", "predicted_cell_type")],
+    merged <- inner_join(ann[, c("cell_id", "pred_cell_type")],
                          mor, by = "cell_id")
     merged$method <- method
     all_annot_morpho[[method]] <- merged
@@ -279,20 +279,20 @@ if (length(all_annot_morpho) > 0) {
         # Sort cell types by overall median of first metric in group
         ref_metric <- metrics[1]
         ct_order <- am_df %>%
-            group_by(predicted_cell_type) %>%
+            group_by(pred_cell_type) %>%
             summarise(med = median(.data[[ref_metric]], na.rm = TRUE), .groups = "drop") %>%
             arrange(med) %>%
-            pull(predicted_cell_type)
+            pull(pred_cell_type)
 
         panels <- lapply(metrics, function(metric) {
             sub_df <- am_df %>%
-                select(predicted_cell_type, method, value = all_of(metric)) %>%
+                select(pred_cell_type, method, value = all_of(metric)) %>%
                 filter(!is.na(value)) %>%
-                mutate(predicted_cell_type = factor(predicted_cell_type, levels = ct_order))
+                mutate(pred_cell_type = factor(pred_cell_type, levels = ct_order))
             # Clip x-axis to the outermost actual whisker tip across every group.
             # Compute per (cell_type × method) whisker endpoints, then take global min/max.
             wb <- sub_df %>%
-                group_by(predicted_cell_type, method) %>%
+                group_by(pred_cell_type, method) %>%
                 summarise(
                     lo = max(min(value, na.rm = TRUE),
                              quantile(value, 0.25, na.rm = TRUE) - 1.5 * IQR(value, na.rm = TRUE)),
@@ -302,7 +302,7 @@ if (length(all_annot_morpho) > 0) {
                 )
             wlo <- min(wb$lo, na.rm = TRUE)
             whi <- max(wb$hi, na.rm = TRUE)
-            ggplot(sub_df, aes(x = value, y = predicted_cell_type, fill = method)) +
+            ggplot(sub_df, aes(x = value, y = pred_cell_type, fill = method)) +
                 geom_boxplot(outlier.shape = NA, linewidth = 0.35,
                              position = position_dodge(preserve = "single")) +
                 coord_cartesian(xlim = c(wlo, whi)) +
@@ -338,7 +338,7 @@ for (method in as.character(method_levels)) {
     annot_path <- file.path(coords_dir, sprintf("annotations_%s.csv", method))
     if (!file.exists(annot_path)) next
     df <- read.csv(annot_path, stringsAsFactors = FALSE)
-    if (!"predicted_cell_type" %in% colnames(df)) next
+    if (!"pred_cell_type" %in% colnames(df)) next
     df$cell_id <- as.character(df$cell_id)
     df$method  <- as.character(method)
     all_annot[[method]] <- df
@@ -349,20 +349,20 @@ if (has_annotations) {
     annot_df <- bind_rows(all_annot)
     annot_df$method <- factor(annot_df$method, levels = method_levels)
     ct_order <- annot_df %>%
-        group_by(predicted_cell_type) %>%
-        summarise(med = median(predicted_cell_type_confidence, na.rm = TRUE), .groups = "drop") %>%
+        group_by(pred_cell_type) %>%
+        summarise(med = median(pred_confidence, na.rm = TRUE), .groups = "drop") %>%
         arrange(desc(med)) %>%
-        pull(predicted_cell_type)
-    annot_df$predicted_cell_type <- factor(annot_df$predicted_cell_type, levels = ct_order)
+        pull(pred_cell_type)
+    annot_df$pred_cell_type <- factor(annot_df$pred_cell_type, levels = ct_order)
 
     comp_df <- annot_df %>%
-        group_by(method, predicted_cell_type) %>%
+        group_by(method, pred_cell_type) %>%
         summarise(n = n(), .groups = "drop") %>%
         group_by(method) %>%
         mutate(pct = 100 * n / sum(n)) %>%
         ungroup()
 
-    p_comp_pct <- ggplot(comp_df, aes(x = method, y = pct, fill = predicted_cell_type)) +
+    p_comp_pct <- ggplot(comp_df, aes(x = method, y = pct, fill = pred_cell_type)) +
         geom_col(position = "stack", width = 0.65) +
         scale_fill_manual(values = ditto_colors) +
         labs(title = "Cell Type Composition (%)", x = NULL, y = "% Cells", fill = "Cell Type") +
@@ -375,13 +375,13 @@ if (has_annotations) {
 
     # Order cell types by total count descending (largest at top of horizontal chart)
     ct_total <- comp_df %>%
-        group_by(predicted_cell_type) %>%
+        group_by(pred_cell_type) %>%
         summarise(total = sum(n), .groups = "drop") %>%
         arrange(desc(total))
-    comp_df$predicted_cell_type <- factor(comp_df$predicted_cell_type,
-                                          levels = rev(ct_total$predicted_cell_type))
+    comp_df$pred_cell_type <- factor(comp_df$pred_cell_type,
+                                          levels = rev(ct_total$pred_cell_type))
 
-    p_comp_n <- ggplot(comp_df, aes(y = predicted_cell_type, x = n, fill = method)) +
+    p_comp_n <- ggplot(comp_df, aes(y = pred_cell_type, x = n, fill = method)) +
         geom_col(position = "dodge", width = 0.7) +
         scale_fill_manual(values = ditto_colors) +
         labs(title = "Cell Count by Type", y = NULL, x = "# Cells", fill = "Method") +
@@ -421,7 +421,7 @@ if (has_annotations) {
     method_conf_plots <- lapply(seq_along(levels(annot_df$method)), function(i) {
         m   <- levels(annot_df$method)[i]
         sub <- annot_df[annot_df$method == m, ]
-        ggplot(sub, aes(x = predicted_cell_type, y = predicted_cell_type_confidence)) +
+        ggplot(sub, aes(x = pred_cell_type, y = pred_confidence)) +
             geom_violin(trim = TRUE, scale = "width",
                         fill = ditto_colors[((i - 1) %% length(ditto_colors)) + 1],
                         alpha = 0.8) +
@@ -446,11 +446,11 @@ if (has_annotations) {
 
     # ── 4b: per-cell-type detail ──
     p_conf_detail <- ggplot(annot_df,
-                            aes(x = method, y = predicted_cell_type_confidence, fill = method)) +
+                            aes(x = method, y = pred_confidence, fill = method)) +
         geom_violin(trim = TRUE, scale = "width") +
         geom_boxplot(width = 0.12, fill = "white", outlier.shape = NA) +
         coord_cartesian(ylim = c(0, 1)) +
-        facet_wrap(~predicted_cell_type, ncol = 4) +
+        facet_wrap(~pred_cell_type, ncol = 4) +
         labs(title = "Confidence per Cell Type (by Method)", x = NULL, y = "Confidence") +
         scale_fill_manual(values = ditto_colors) +
         theme_minimal(base_size = 8) +

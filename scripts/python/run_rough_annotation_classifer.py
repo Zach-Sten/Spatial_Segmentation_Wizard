@@ -302,12 +302,13 @@ def _predict_and_save(clf, le, gene_list, query_path: Path, output_dir: Path, sa
 
     labels, confidence = predict_labels(clf, le, X_query)
 
-    query.obs["predicted_cell_type"]            = labels
-    query.obs["predicted_cell_type_confidence"] = confidence
+    query.obs["pred_cell_type"]   = labels
+    query.obs["pred_confidence"]  = confidence
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    query.write_h5ad(output_dir / f"{sample_id}_annotated.h5ad")
-    csv_df = query.obs[["predicted_cell_type", "predicted_cell_type_confidence"]].copy()
+    # Write back to the original h5ad so QC and concat steps see annotations directly.
+    query.write_h5ad(output_dir / f"{sample_id}.h5ad")
+    csv_df = query.obs[["pred_cell_type", "pred_confidence"]].copy()
     csv_df.index.name = "cell_id"
     csv_df.to_csv(output_dir / f"{sample_id}_predicted_celltypes.csv")
     print(f"[INFO] Saved: {output_dir / f'{sample_id}_predicted_celltypes.csv'}")
@@ -319,7 +320,7 @@ def _predict_and_save(clf, le, gene_list, query_path: Path, output_dir: Path, sa
         "#38B7FF", "#FF9B4D", "#E0AFCA", "#A3A3A3", "#8A5F00", "#1674A9",
         "#005F45", "#AA9F0D", "#00446B", "#803800", "#8D3666", "#3D3D3D",
     ]
-    cell_types = sorted(query.obs["predicted_cell_type"].unique())
+    cell_types = sorted(query.obs["pred_cell_type"].unique())
     ct_color_map = {ct: DITTO_COLORS[i % len(DITTO_COLORS)] for i, ct in enumerate(cell_types)}
 
     # For FastReseg: Stage 4 forces integer obs_names (0,1,...) before sopa.write() so
@@ -342,14 +343,14 @@ def _predict_and_save(clf, le, gene_list, query_path: Path, output_dir: Path, sa
             print(f"[INFO] FastReseg: obs_names are already barcode strings, using directly ({len(cell_ids)} cells)")
         explorer_df = pd.DataFrame({
             "cell_id": cell_ids,
-            "group":   query.obs["predicted_cell_type"].values,
-            "color":   query.obs["predicted_cell_type"].map(ct_color_map).values,
+            "group":   query.obs["pred_cell_type"].values,
+            "color":   query.obs["pred_cell_type"].map(ct_color_map).values,
         })
     else:
         explorer_df = pd.DataFrame({
             "cell_id": query.obs_names,
-            "group":   query.obs["predicted_cell_type"].values,
-            "color":   query.obs["predicted_cell_type"].map(ct_color_map).values,
+            "group":   query.obs["pred_cell_type"].values,
+            "color":   query.obs["pred_cell_type"].map(ct_color_map).values,
         })
 
     explorer_csv = output_dir / f"{sample_id}_xenium_explorer_annotations.csv"
@@ -360,7 +361,7 @@ def _predict_and_save(clf, le, gene_list, query_path: Path, output_dir: Path, sa
     # color = inferno hex (dark=low confidence, yellow=high confidence)
     import matplotlib.cm as cm
     inferno = cm.get_cmap("inferno")
-    conf_vals = query.obs["predicted_cell_type_confidence"].values
+    conf_vals = query.obs["pred_confidence"].values
     conf_rounded = (np.round(conf_vals / 0.05) * 0.05).clip(0.0, 1.0)
 
     def _inferno_hex(v):
@@ -380,6 +381,47 @@ def _predict_and_save(clf, le, gene_list, query_path: Path, output_dir: Path, sa
         print(f"  {ct:<40} {n:>6}  {bar}")
 
     return labels
+
+
+def _concat_by_method(queries: dict, data_dir: Path):
+    """After annotation, concat all per-sample h5ads by method.
+
+    For each method, reads the (now-annotated) {sample_id}.h5ad files, adds
+    `slide_name` (sample folder name) and `slide_idx` (1, 2, 3...) to .obs,
+    prefixes obs_names with "{slide_idx}_" to guarantee uniqueness, then
+    writes {method}_concat.h5ad to data_dir/qc/.
+    """
+    import scanpy as sc
+
+    method_samples: dict = {}
+    for h5ad_path, output_dir, method, sample_id in queries.values():
+        method_samples.setdefault(method, []).append((sample_id, h5ad_path))
+
+    if not method_samples:
+        return
+
+    qc_dir = data_dir / "qc"
+    qc_dir.mkdir(parents=True, exist_ok=True)
+
+    for method, samples in sorted(method_samples.items()):
+        samples = sorted(samples, key=lambda x: x[0])  # stable sort by sample_id
+        if len(samples) < 2:
+            print(f"[INFO] Concat [{method}]: only 1 sample — skipping")
+            continue
+
+        adatas = []
+        for slide_idx, (sample_id, h5ad_path) in enumerate(samples, start=1):
+            adata = sc.read_h5ad(h5ad_path)
+            adata.obs["slide_name"] = sample_id
+            adata.obs["slide_idx"]  = str(slide_idx)
+            adata.obs_names         = adata.obs_names.map(lambda x: f"{slide_idx}_{x}")
+            adatas.append(adata)
+
+        combined = sc.concat(adatas, join="outer")
+        out_path = qc_dir / f"{method}_concat.h5ad"
+        combined.write_h5ad(out_path)
+        print(f"[INFO] Concat [{method}]: {len(samples)} samples → {out_path.name} "
+              f"({combined.n_obs:,} cells)")
 
 
 def main():
@@ -520,6 +562,13 @@ def main():
         total_annotated += len(labels)
 
     print(f"\n[DONE] {total_annotated} cells annotated across {len(queries)} h5ad(s)")
+
+    # ── Concat per-method ──
+    print("\n[INFO] Building per-method concat h5ads...")
+    try:
+        _concat_by_method(queries, data_dir)
+    except Exception as e:
+        print(f"[WARN] Concat step failed (non-fatal): {e}")
 
 
 if __name__ == "__main__":
