@@ -31,6 +31,8 @@ METHOD_SCRIPTS = {
     "cellpose":      "scripts/python/run_cellpose.py",
     "bidcell":       "scripts/python/run_bidcell.py",
     "fastreseg":     "scripts/python/run_fastreseg.py",
+    "stardist":      "scripts/python/run_stardist.py",
+    "comseg":        "scripts/python/run_comseg.py",
     "xenium_export": "scripts/python/run_xenium_export.py",
     "cellspa_qc":    "scripts/python/run_qc.py",
     "classifier":    "scripts/python/run_rough_annotation_classifer.py",

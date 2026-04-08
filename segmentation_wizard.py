@@ -139,14 +139,18 @@ def prompt_yn(label, default=True):
     return val in ("y", "yes")
 
 
-def prompt_multi(label, options, defaults=None):
-    """Select multiple from a list. Returns list of selected."""
+def prompt_multi(label, options, defaults=None, marked=None):
+    """Select multiple from a list. Returns list of selected.
+
+    marked: set of options that get the checkmark indicator (defaults to defaults set).
+    """
     if defaults is None:
         defaults = options[:]
+    _marked = set(marked) if marked is not None else set(defaults)
 
     print(f"  {label}")
     for i, opt in enumerate(options, 1):
-        marker = CHECK if opt in defaults else " "
+        marker = CHECK if opt in _marked else " "
         print(f"   {marker} {i}) {opt}")
 
     print(f"  {DIM}Enter numbers separated by spaces, or 'all' / 'none'{RESET}")
@@ -308,10 +312,13 @@ def wizard():
     # ── Methods ──
     section("Segmentation Methods")
 
-    all_methods = ["proseg", "baysor", "cellpose", "bidcell", "fastreseg"]
+    all_methods = ["proseg", "baysor", "cellpose", "stardist", "comseg", "bidcell", "fastreseg"]
 
+    SOPA_MANAGED = {"proseg", "baysor", "cellpose", "stardist", "comseg"}
     selected = prompt_multi(
-        f"Which methods to run? {DIM}(✓ = SOPA-supported){RESET}", all_methods, defaults=["proseg", "baysor", "cellpose"]
+        f"Which methods to run? {DIM}(✓ = SOPA-managed){RESET}", all_methods,
+        defaults=["proseg", "baysor", "cellpose"],
+        marked=SOPA_MANAGED,
     )
 
     METHOD_DEFAULTS = {
@@ -334,6 +341,17 @@ def wizard():
             "slurm": {"mem": "300G", "cpus_per_task": 8, "gpu": True, "time": "3-00:00:00"},
             "params": {"config_template": "xenium", "explorer_mode": "+cbm"},
         },
+        "stardist": {
+            "slurm": {"mem": "200G", "cpus_per_task": 8, "time": "2-00:00:00"},
+            "params": {"channels": ["DAPI"], "model_type": "2D_versatile_fluo",
+                       "patch_width": 1200, "patch_overlap": 50,
+                       "prob_thresh": 0.2, "nms_thresh": 0.6, "explorer_mode": "+cbm"},
+        },
+        "comseg": {
+            "slurm": {"mem": "300G", "cpus_per_task": 8, "time": "4-00:00:00"},
+            "params": {"prior_shapes_key": "cell_boundaries", "patch_width": 200,
+                       "min_area": 0, "explorer_mode": "+cbm"},
+        },
     }
 
     # Ask GPU/CPU for any selected GPU-capable methods
@@ -352,12 +370,12 @@ def wizard():
                 gpu_partition = prompt("  GPU partition", default="common").strip() or "common"
             METHOD_DEFAULTS[method]["slurm"]["partition"] = gpu_partition
 
-    # Ask patch sizes for SOPA-based methods (baysor, proseg, cellpose)
-    SOPA_METHODS = {"baysor", "proseg", "cellpose"}
+    # Ask patch sizes for SOPA-based methods
+    SOPA_METHODS = {"baysor", "proseg", "cellpose", "stardist", "comseg"}
     sopa_selected = [m for m in selected if m in SOPA_METHODS]
     if sopa_selected:
         print()
-        print(f"  {BOLD}SOPA patch settings{RESET} {DIM}(baysor / proseg / cellpose){RESET}")
+        print(f"  {BOLD}SOPA patch settings{RESET} {DIM}(baysor / proseg / cellpose / stardist / comseg){RESET}")
         print(f"  {DIM}Larger patches = more transcripts per patch = more stable segmentation{RESET}")
         transcript_patch_width = int(prompt("  Transcript patch width (µm)", default="500").strip() or "500")
         image_patch_width      = int(prompt("  Image patch width (px)",      default="1200").strip() or "1200")
@@ -393,6 +411,27 @@ def wizard():
             print(f"  {CHECK} Baysor prior: {BOLD}{prior_key}{RESET}")
         print(f"  {DIM}Tip: if Baysor fails, try decreasing patch sizes first; as a fallback, rerun with no prior.{RESET}")
 
+    # Ask ComSeg prior if selected
+    if "comseg" in selected:
+        print()
+        print(f"  {BOLD}ComSeg prior segmentation{RESET} {DIM}(required — provides cell centroid seeds){RESET}")
+        comseg_prior_options = [
+            ("cell_boundaries",      "Xenium native (default) — use native Xenium cell boundaries"),
+            ("cellpose_boundaries",  "Cellpose — use cellpose output as prior (requires cellpose)"),
+            ("stardist_boundaries",  "StarDist — use stardist output as prior (requires stardist)"),
+        ]
+        for i, (key, desc) in enumerate(comseg_prior_options, 1):
+            default_marker = f"  {DIM}← default{RESET}" if i == 1 else ""
+            print(f"    {i}. {desc}{default_marker}")
+        raw = prompt("  Choice [1-3]", default="1").strip() or "1"
+        try:
+            idx = int(raw) - 1
+            comseg_prior = comseg_prior_options[idx][0] if 0 <= idx < len(comseg_prior_options) else "cell_boundaries"
+        except (ValueError, IndexError):
+            comseg_prior = "cell_boundaries"
+        METHOD_DEFAULTS["comseg"]["params"]["prior_shapes_key"] = comseg_prior
+        print(f"  {CHECK} ComSeg prior: {BOLD}{comseg_prior}{RESET}")
+
     # Ask FastReseg source method if selected
     fastreseg_source = "xenium"
     if "fastreseg" in selected:
@@ -415,7 +454,7 @@ def wizard():
     # Ask memory per selected method
     MEM_DEFAULTS = {
         "proseg": "400G", "baysor": "600G", "cellpose": "200G",
-        "bidcell": "300G", "fastreseg": "400G",
+        "bidcell": "300G", "stardist": "200G", "comseg": "300G", "fastreseg": "400G",
     }
     fastreseg_mem = "400G"
     if selected:
