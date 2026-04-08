@@ -175,6 +175,50 @@ def prompt_multi(label, options, defaults=None, marked=None):
     return selected if selected else defaults
 
 
+def ensure_stardist_models(sif_path: str, seg_models_dir: Path) -> str:
+    """Download StarDist pretrained models via the container to seg_models_dir.
+
+    Returns the path to use as CSBDEEP_CACHE_DIR, or raises SystemExit with a
+    clear message if the download fails (e.g. no internet on this node).
+    """
+    import subprocess
+    seg_models_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = str(seg_models_dir)
+
+    print(f"\n  {BOLD}StarDist model download{RESET}")
+    print(f"  {DIM}Downloading pretrained models to: {cache_dir}{RESET}")
+    print(f"  {DIM}(Only needed once — subsequent runs reuse the cached models){RESET}")
+
+    script = f"""
+import os, sys
+os.environ['CSBDEEP_CACHE_DIR'] = '{cache_dir}'
+from stardist.models import StarDist2D
+try:
+    print('  Downloading 2D_versatile_fluo...')
+    StarDist2D.from_pretrained('2D_versatile_fluo')
+    print('  Downloading 2D_versatile_he...')
+    StarDist2D.from_pretrained('2D_versatile_he')
+    print('  Done.')
+except Exception as e:
+    print(f'ERROR: {{e}}', file=sys.stderr)
+    sys.exit(1)
+"""
+    result = subprocess.run(
+        ["singularity", "exec", sif_path,
+         "/opt/miniforge3/envs/spatial_segmentation_env/bin/python", "-c", script],
+        capture_output=False,
+    )
+    if result.returncode != 0:
+        print(f"\n  {RED}{BOLD}StarDist model download failed.{RESET}")
+        print(f"  {YELLOW}This usually means this node has no outbound internet access.{RESET}")
+        print(f"  {YELLOW}Re-run the wizard from a login node to download the models,{RESET}")
+        print(f"  {YELLOW}then re-run from the compute/build node to submit jobs.{RESET}")
+        sys.exit(1)
+
+    print(f"  {CHECK} StarDist models cached at: {BOLD}{cache_dir}{RESET}")
+    return cache_dir
+
+
 def path_prompt(label, default=None, must_exist=False, required=True):
     """Prompt for a file/directory path with tab completion."""
     try:
@@ -431,6 +475,12 @@ def wizard():
             comseg_prior = "cell_boundaries"
         METHOD_DEFAULTS["comseg"]["params"]["prior_shapes_key"] = comseg_prior
         print(f"  {CHECK} ComSeg prior: {BOLD}{comseg_prior}{RESET}")
+
+    # Download StarDist models on first use
+    if "stardist" in selected:
+        seg_models_dir = Path(os.getcwd()) / "seg_models"
+        stardist_cache = ensure_stardist_models(cfg["paths"]["container_sif"], seg_models_dir)
+        cfg["data"]["seg_models_path"] = stardist_cache
 
     # Ask FastReseg source method if selected
     fastreseg_source = "xenium"

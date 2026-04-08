@@ -37,11 +37,13 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Point csbdeep (stardist's backend) to the pre-cached models baked into the container.
-    # csbdeep uses CSBDEEP_CACHE_DIR, NOT KERAS_HOME — set before dask workers spawn
-    # so they inherit it and don't attempt to download at runtime.
-    if "CSBDEEP_CACHE_DIR" not in os.environ:
-        os.environ["CSBDEEP_CACHE_DIR"] = "/opt/stardist_models"
+    # Point csbdeep (stardist's backend) to the pre-cached models.
+    # csbdeep uses CSBDEEP_CACHE_DIR, NOT KERAS_HOME — must be set before dask workers
+    # spawn so they inherit it and don't attempt to download at runtime.
+    # Prefer the path stored in config (downloaded by wizard), fall back to container path.
+    seg_models_path = cfg.get("data", {}).get("seg_models_path", "/opt/stardist_models")
+    os.environ["CSBDEEP_CACHE_DIR"] = seg_models_path
+    print(f"[INFO] CSBDEEP_CACHE_DIR: {seg_models_path}")
 
     cpus = configure_threads()
     configure_dask(cpus)
