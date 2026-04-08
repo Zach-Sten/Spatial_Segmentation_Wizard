@@ -58,17 +58,17 @@ def _stage_model_for_keras(model_type: str, src_model_dir: Path):
 
     src_zip = src_model_dir.parent / f"{model_type}.zip"
 
-    # Use KERAS_HOME if already set (e.g. by container), otherwise default to ~/.keras.
-    # Store as an absolute path and export it so ALL worker subprocesses use the
-    # same location — workers inherit env vars, unlike in-memory Python patches.
-    existing_keras_home = os.environ.get("KERAS_HOME", "")
-    if existing_keras_home:
-        keras_root = Path(existing_keras_home)
-        print(f"[INFO] KERAS_HOME already set: {keras_root}")
-    else:
-        keras_root = Path.home() / ".keras"
-        os.environ["KERAS_HOME"] = str(keras_root)
-        print(f"[INFO] Set KERAS_HOME={keras_root} (workers will inherit this)")
+    # Always override KERAS_HOME to a writable absolute path.
+    # The Singularity container may set KERAS_HOME to a read-only path inside /opt,
+    # which workers cannot write to (and may not have the model). We override it with
+    # the home-dir keras cache, which is always writable and shared across all worker
+    # subprocesses (workers inherit env vars, unlike in-memory Python patches).
+    keras_root = Path.home() / ".keras"
+    existing = os.environ.get("KERAS_HOME", "")
+    if existing and existing != str(keras_root):
+        print(f"[INFO] Overriding container KERAS_HOME={existing} → {keras_root}")
+    os.environ["KERAS_HOME"] = str(keras_root)
+    print(f"[INFO] KERAS_HOME={keras_root}")
 
     keras_subdir = keras_root / "models" / "StarDist2D" / model_type
     keras_subdir.mkdir(parents=True, exist_ok=True)
