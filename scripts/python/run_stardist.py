@@ -37,23 +37,40 @@ from utils.data_io import (
 
 
 def _stage_model_for_keras(model_type: str, src_model_dir: Path):
-    """Populate ~/.keras/models/StarDist2D/{model_type}/ with the zip and
-    extracted model so csbdeep/keras finds them without any network access.
+    """Populate the keras cache with the zip and extracted model so
+    csbdeep/keras finds them without any network access.
 
     csbdeep calls keras.get_file(cache_subdir="models/StarDist2D/{key}"),
     so keras expects:
-        ~/.keras/models/StarDist2D/{model_type}/{model_type}.zip   ← for hash check
-        ~/.keras/models/StarDist2D/{model_type}/{model_type}/      ← extracted weights
-        ~/.keras/models/StarDist2D/{model_type}/{model_type}_extracted/  ← keras >= 3.6.0
+        {KERAS_HOME}/models/StarDist2D/{model_type}/{model_type}.zip   ← hash check
+        {KERAS_HOME}/models/StarDist2D/{model_type}/{model_type}/      ← keras < 3.6.0
+        {KERAS_HOME}/models/StarDist2D/{model_type}/{model_type}_extracted/  ← keras >= 3.6.0
+
+    Sets KERAS_HOME as an absolute-path env var so dask worker subprocesses
+    inherit it and use the same cache dir, regardless of how they resolve ~.
 
     src_model_dir: wizard-extracted dir, e.g.
         seg_models/models/StarDist2D/2D_versatile_fluo/
     src zip lives one level up:
         seg_models/models/StarDist2D/2D_versatile_fluo.zip
     """
+    import hashlib
+
     src_zip = src_model_dir.parent / f"{model_type}.zip"
 
-    keras_subdir = Path.home() / ".keras" / "models" / "StarDist2D" / model_type
+    # Use KERAS_HOME if already set (e.g. by container), otherwise default to ~/.keras.
+    # Store as an absolute path and export it so ALL worker subprocesses use the
+    # same location — workers inherit env vars, unlike in-memory Python patches.
+    existing_keras_home = os.environ.get("KERAS_HOME", "")
+    if existing_keras_home:
+        keras_root = Path(existing_keras_home)
+        print(f"[INFO] KERAS_HOME already set: {keras_root}")
+    else:
+        keras_root = Path.home() / ".keras"
+        os.environ["KERAS_HOME"] = str(keras_root)
+        print(f"[INFO] Set KERAS_HOME={keras_root} (workers will inherit this)")
+
+    keras_subdir = keras_root / "models" / "StarDist2D" / model_type
     keras_subdir.mkdir(parents=True, exist_ok=True)
 
     # ── zip (keras validates hash before using local copy) ────────────────────
@@ -62,7 +79,12 @@ def _stage_model_for_keras(model_type: str, src_model_dir: Path):
     dest_zip = keras_subdir / f"{model_type}.zip"
     if src_zip.exists():
         shutil.copy2(str(src_zip), str(dest_zip))
-        print(f"[INFO] Staged zip → {dest_zip}")
+        size_mb = dest_zip.stat().st_size / (1024 * 1024)
+        h = hashlib.sha256()
+        with open(dest_zip, "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                h.update(chunk)
+        print(f"[INFO] Staged zip → {dest_zip} ({size_mb:.1f} MB, sha256={h.hexdigest()[:16]}...)")
     else:
         print(f"[WARN] Source zip not found at {src_zip} — workers may try to download")
 
