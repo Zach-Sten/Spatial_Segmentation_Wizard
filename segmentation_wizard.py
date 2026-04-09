@@ -340,11 +340,11 @@ def wizard():
 
     data_mode = prompt_choice(
         "Data mode:",
-        ["slide (multiple samples)", "single sample"],
-        default="slide (multiple samples)",
+        ["experiment (multiple slides)", "single sample"],
+        default="experiment (multiple slides)",
     )
 
-    if data_mode.startswith("slide"):
+    if data_mode.startswith("experiment"):
         cfg["data"]["slide_dir"] = path_prompt(
             "Slide directory path (folder containing multiple sample sub-folders)", must_exist=True
         )
