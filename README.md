@@ -33,12 +33,15 @@ If a refrence dataset is used we can also quickly spot annotations made by the c
 **Working:**
 - **ProSeg** — probabilistic segmentation, full Explorer export (https://www.nature.com/articles/s41592-025-02697-0)
 - **Baysor** — Bayesian transcript-based segmentation, dask-parallelized (https://www.nature.com/articles/s41587-021-01044-w)
-- **Xenium baseline** — native Xenium segmentation loaded as reference
+- **Xenium baseline** — native Xenium segmentation loaded as reference (https://www.10xgenomics.com/support/software/xenium-onboard-analysis/latest/algorithms-overview/segmentation)
 - **Fastreseg** - R based program that uses a reference dataset to match cell types (https://www.nature.com/articles/s41598-025-08733-5)
 - **Cellpose** - neural net model to fit segmentation boundaries by expansion of nuclear mask (https://www.nature.com/articles/s41592-020-01018-x)
-- **QC report** — automated 4-page PDF comparing all methods, emailed on completion
+- **StarDist** - Deep-learning star convexed polygon detection (https://arxiv.org/abs/1806.03535)
+- **Comseg** - Point cloud for transcript detection using KNN (https://www.nature.com/articles/s42003-024-06480-3)
+- **QC report** — automated multi-page PDF comparing all methods, emailed on completion
   - Basic metrics: cell count, genes/cell, counts/cell, % transcripts captured
   - Morphological metrics: cell area, elongation, circularity, compactness, eccentricity, solidity, convexity, density, nuclear ratio
+  - Segger contamination metrics (MECR)
   - All metrics computed from segmentation boundary geometry in Python (shapely)
   - Guide pages interleaved with data pages for interpretation context
 - **Notifications** — email on job start, finish, and error; PDF for QC results attached on finish
@@ -55,7 +58,11 @@ If a refrence dataset is used we can also quickly spot annotations made by the c
 | **Baysor** | Bayesian transcript-based (Julia, via SOPA) | ✓ Working |
 | **Cellpose** | Neural network (Python, via SOPA) | ✓ Working |
 | **FastReseg** | Post-hoc refinement (R) | ✓ Working |
+| **Comseg** | | ✓ Working |
+| **Stardist** | Deep learning nuclear segmentation | ✓ Working |
 | **BIDCell** | Deep learning (PyTorch) | In progress |
+| **Bering** | Graph based learning for transcript localization | In progress |
+| **Segger** | Heteogenous graph neural network for link prediction | In progress |
 
 
 ## Quick Start
@@ -88,6 +95,8 @@ Results are written into `{method}_reseg/` folders alongside your raw data. Raw 
 | `cells.zarr.zip` | Cell boundaries for Xenium Explorer |
 | `cell_feature_matrix.zarr.zip` | Count matrix for Explorer |
 | `run_metadata_{method}.json` | Timing, parameters, SLURM job ID |
+| `annotations.csv` | Annotated cell types learned from reference dataset |
+| `confidence.csv` | Confidence in annotations |
 
 QC output per slide:
 - `qc_report.pdf` — 4-page comparative report (emailed automatically)
@@ -118,7 +127,7 @@ scripts/utils/
 
 ## Container
 
-All segmentation methods run inside a single Singularity container (`container/Singularity_spatial_segmentation_v3`). Contains Python 3.10, SOPA, ProSeg, Baysor, Cellpose, BIDCell, FastReseg, CellSPA, scanpy, spatialdata, PyTorch + CUDA, R + spatial packages.
+All segmentation methods run inside a single Singularity container (`container/Singularity_spatial_segmentation_v3`). Contains Python 3.10, SOPA, ProSeg, Baysor, Cellpose, BIDCell, FastReseg, CellSPA, Segger, StarDist, Comseg, Bering, scanpy, spatialdata, PyTorch + CUDA, R + spatial packages.
 
 
 ## Requirements
