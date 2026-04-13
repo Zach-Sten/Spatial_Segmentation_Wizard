@@ -116,7 +116,8 @@ def generate_slurm_script(
 
     # Build bind paths — collect all unique parent directories that need to be visible
     bind_paths = set()
-    bind_paths.add(str(sample.sample_dir))           # raw data
+    bind_paths.add(str(sample.slide_dir))             # slide root (covers qc/, outputs, raw data, etc.)
+    bind_paths.add(str(sample.sample_dir))            # raw data
     bind_paths.add(str(output_dir))                   # output
     bind_paths.add(str(log_dir))                      # logs
     bind_paths.add(str(Path(config_path).resolve().parent))  # config dir
