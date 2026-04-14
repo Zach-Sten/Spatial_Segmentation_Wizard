@@ -72,10 +72,33 @@ def configure_dask(cpus: int):
 
 
 # ── Data loading ──
+def _normalize_morphology_focus(raw_data_path: str):
+    """Symlink ch000X_name.ome.tif → morphology_focus_000X.ome.tif if needed.
+
+    Newer Xenium outputs use channel-named files; spatialdata-io expects the
+    legacy morphology_focus_000X naming.  Creates symlinks in-place so no data
+    is copied or modified.
+    """
+    morph_dir = Path(raw_data_path) / "morphology_focus"
+    if not morph_dir.exists():
+        return
+
+    new_style = sorted(morph_dir.glob("ch*.ome.tif"))
+    if not new_style:
+        return  # Already legacy-named or empty — nothing to do
+
+    for i, src in enumerate(new_style):
+        expected = morph_dir / f"morphology_focus_{i:04d}.ome.tif"
+        if not expected.exists():
+            expected.symlink_to(src.name)
+            print(f"[INFO] Symlinked {src.name} → {expected.name}")
+
+
 @timed("Load spatial data")
 def load_xenium_data(raw_data_path: str):
     """Load Xenium data via spatialdata-io."""
     from spatialdata_io import xenium
+    _normalize_morphology_focus(raw_data_path)
     sdata = xenium(raw_data_path, cells_as_circles=True)
     print(f"[INFO] Loaded: {list(sdata.images.keys())} images, "
           f"{len(sdata.points) if hasattr(sdata, 'points') else '?'} point tables")
