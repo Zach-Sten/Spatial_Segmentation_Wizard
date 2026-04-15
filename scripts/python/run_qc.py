@@ -1276,16 +1276,30 @@ def compute_segger_metrics(method_data: dict, qc_dir: Path, base_dir: Path,
 def _find_sample_output_dir(reseg_dir: Path, sample_id: str):
     """Find the per-sample output dir inside a *_reseg directory.
 
-    Checks two naming conventions:
+    Checks naming conventions in order:
       1. {reseg_dir}/{sample_id}/            (current)
       2. {reseg_dir}/output-{sample_id}*/    (legacy — full raw folder name)
+      3. Any subdirectory whose name contains the slide barcode (XETG\\d+__\\d+)
+         extracted from sample_id — handles non-standard output dirs written by
+         jobs that ignore the pipeline's naming convention.
     Returns the first directory that contains an h5ad, or None.
     """
+    import re
+
     candidates = [reseg_dir / sample_id]
     candidates += sorted(reseg_dir.glob(f"output-{sample_id}*"))
     for candidate in candidates:
         if candidate.is_dir() and list(candidate.glob("*.h5ad")):
             return candidate
+
+    # Fallback: match on the bare slide barcode (e.g. XETG00395__0105924)
+    barcode_match = re.search(r"XETG\d+__\d+", sample_id)
+    if barcode_match:
+        barcode = barcode_match.group(0)
+        for subdir in sorted(reseg_dir.iterdir()):
+            if subdir.is_dir() and barcode in subdir.name and list(subdir.glob("*.h5ad")):
+                return subdir
+
     return None
 
 
