@@ -1292,13 +1292,15 @@ def _find_sample_output_dir(reseg_dir: Path, sample_id: str):
         if candidate.is_dir() and list(candidate.glob("*.h5ad")):
             return candidate
 
-    # Fallback: match on the bare slide barcode (e.g. XETG00395__0105924)
-    barcode_match = re.search(r"XETG\d+__\d+", sample_id)
-    if barcode_match:
-        barcode = barcode_match.group(0)
-        for subdir in sorted(reseg_dir.iterdir()):
-            if subdir.is_dir() and barcode in subdir.name and list(subdir.glob("*.h5ad")):
-                return subdir
+    # Fallback: find any subdir with an h5ad whose name is a prefix of sample_id
+    # or vice versa — handles truncated/extended directory names regardless of
+    # naming scheme (e.g. "XETG00395__0105924" matching a full timestamped id).
+    for subdir in sorted(reseg_dir.iterdir()):
+        if not subdir.is_dir():
+            continue
+        name = subdir.name
+        if (sample_id.startswith(name) or name.startswith(sample_id)) and list(subdir.glob("*.h5ad")):
+            return subdir
 
     return None
 
