@@ -191,6 +191,8 @@ def generate_slurm_script(
         )
 
     lines += [
+        "ulimit -n 65536",
+        "",
         f"singularity exec {nv_flag}{bind_flag} \\",
         f"    {container} \\",
         py_args,
