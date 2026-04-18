@@ -31,15 +31,13 @@ from utils.data_io import (
 )
 
 
-def _install_baysor_wrapper():
+def _install_baysor_wrapper(error_log: str):
     """
-    Wrap the baysor binary so its stdout/stderr surface in the job's .err log.
+    Wrap the baysor binary so its stdout/stderr surface in a persistent error log.
 
-    sopa captures Baysor subprocess output internally but discards it when raising
-    CalledProcessError — so failures are silent.  We intercept by prepending a
-    wrapper script to PATH before dask workers fork from this process.  Workers
-    inherit the modified PATH, find our 'baysor' first, and the wrapper pipes all
-    output to stderr (→ job .err) before forwarding the exit code.
+    Dask worker stderr is not forwarded to the SLURM .err file, so writing to
+    stderr is silent.  Instead, the wrapper appends all failed-patch output to
+    a known file (error_log) that we can inspect after the job finishes or fails.
     """
     real_baysor = shutil.which("baysor")
     if not real_baysor:
@@ -50,13 +48,14 @@ def _install_baysor_wrapper():
     wrapper = os.path.join(wrapper_dir, "baysor")
     with open(wrapper, "w") as f:
         f.write(f"""#!/bin/bash
-# Auto-generated wrapper — pipes baysor output to job stderr for visibility
+# Auto-generated wrapper — appends failed Baysor patch output to a persistent log
 LOG=$(mktemp /tmp/baysor_XXXXXX.log)
 "{real_baysor}" "$@" >"$LOG" 2>&1
 RC=$?
 if [ $RC -ne 0 ]; then
-    echo "[BAYSOR ERROR] exit $RC — patch log follows:" >&2
-    cat "$LOG" >&2
+    echo "[BAYSOR ERROR] exit $RC  pwd=$(pwd)  args=$@" >> "{error_log}"
+    cat "$LOG" >> "{error_log}"
+    echo "---" >> "{error_log}"
 fi
 rm -f "$LOG"
 exit $RC
@@ -64,6 +63,7 @@ exit $RC
     os.chmod(wrapper, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
     os.environ["PATH"] = wrapper_dir + os.pathsep + os.environ.get("PATH", "")
     print(f"[INFO] Baysor output wrapper installed (real binary: {real_baysor})")
+    print(f"[INFO] Baysor error log: {error_log}")
 
 
 def main():
@@ -82,7 +82,8 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    _install_baysor_wrapper()
+    error_log = str(output_dir / "baysor_errors.log")
+    _install_baysor_wrapper(error_log)
 
     cpus = configure_threads()
     if params.get("parallelization_backend") == "dask":
