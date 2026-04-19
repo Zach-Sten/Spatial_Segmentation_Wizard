@@ -143,9 +143,7 @@ def main():
         @timed("Baysor segmentation")
         def _run():
             try:
-                baysor_kwargs = {"min_area": params.get("min_area", 10)}
-                if not params.get("prior_shapes_key"):
-                    baysor_kwargs["scale"] = params.get("scale", 15)
+                baysor_kwargs = {"min_area": params.get("min_area", 10), "scale": params.get("scale", 15)}
                 sopa.segmentation.baysor(sdata, **baysor_kwargs)
             except Exception as e:
                 print(f"[WARN] Baysor dask run failed ({type(e).__name__}: {e})")
