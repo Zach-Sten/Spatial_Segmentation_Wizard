@@ -111,64 +111,86 @@ def main():
     if params.get("parallelization_backend") == "dask":
         sopa.settings.parallelization_backend = "dask"
 
+    patch_width         = params.get("patch_width", 500)
+    patch_correction    = params.get("patch_error_correction", False)
+    patch_correction_max  = params.get("patch_correction_max", 1500)
+    patch_correction_step = params.get("patch_correction_step", 100)
+
+    # Image patches only need to be prepared once — Baysor doesn't use them
     prepare_patches(
         sdata,
         image_patch_width=params.get("image_patch_width", 1200),
         image_patch_overlap=params.get("patch_overlap", 10),
-        transcript_patch_width=params.get("patch_width", 500),
+        transcript_patch_width=patch_width,
         prior_shapes_key=params.get("prior_shapes_key", None),
     )
 
-    n_tiles = len(sdata.shapes.get("transcripts_patches", []))
-    print(f"[INFO] Running Baysor on {n_tiles} transcript patches...")
+    attempt = 0
+    while True:
+        attempt += 1
+        if attempt > 1:
+            print(f"[INFO] Retry attempt {attempt} — re-preparing transcript patches at {patch_width}µm")
+            sopa.make_transcript_patches(
+                sdata,
+                patch_width=patch_width,
+                **( {"prior_shapes_key": params["prior_shapes_key"]}
+                    if params.get("prior_shapes_key") else {} ),
+            )
 
-    @timed("Baysor segmentation")
-    def _run():
-        try:
-            baysor_kwargs = {"min_area": params.get("min_area", 10)}
-            # When no prior is set, sopa can't infer cell scale — must provide explicitly
-            if not params.get("prior_shapes_key"):
-                baysor_kwargs["scale"] = params.get("scale", 15)
-            sopa.segmentation.baysor(sdata, **baysor_kwargs)
-        except Exception as e:
-            # CalledProcessError  — one patch's Baysor binary returned non-zero; dask
-            #                       cancels remaining futures but completed patches already
-            #                       wrote segmentation_counts.loom to disk.
-            # TimeoutError        — dask worker cleanup hung after all patches finished.
-            # Either way: resolve from whatever loom files landed on disk.
-            print(f"[WARN] Baysor dask run failed ({type(e).__name__}: {e})")
-            print("[WARN] Attempting to resolve completed patches from disk...")
+        n_tiles = len(sdata.shapes.get("transcripts_patches", []))
+        print(f"[INFO] Running Baysor on {n_tiles} transcript patches (patch_width={patch_width}µm)...")
 
+        @timed("Baysor segmentation")
+        def _run():
             try:
-                from sopa.segmentation.transcripts import resolve
-            except ImportError:
-                from sopa.segmentation.methods._baysor import resolve
+                baysor_kwargs = {"min_area": params.get("min_area", 10)}
+                if not params.get("prior_shapes_key"):
+                    baysor_kwargs["scale"] = params.get("scale", 15)
+                sopa.segmentation.baysor(sdata, **baysor_kwargs)
+            except Exception as e:
+                print(f"[WARN] Baysor dask run failed ({type(e).__name__}: {e})")
+                print("[WARN] Attempting to resolve completed patches from disk...")
 
-            from sopa.utils import get_transcripts_patches_dirs
-            all_dirs = get_transcripts_patches_dirs(sdata)
+                try:
+                    from sopa.segmentation.transcripts import resolve
+                except ImportError:
+                    from sopa.segmentation.methods._baysor import resolve
 
-            # Only pass directories that fully finished (loom + polygon file both present)
-            def _patch_complete(p):
-                p = Path(p)
-                if not (p / "segmentation_counts.loom").exists():
-                    return False
-                # sopa looks for segmentation_polygons.json (new) or segmentation.json (old)
-                return (p / "segmentation_polygons.json").exists() or \
-                       (p / "segmentation.json").exists()
+                from sopa.utils import get_transcripts_patches_dirs
+                all_dirs = get_transcripts_patches_dirs(sdata)
 
-            completed = [p for p in all_dirs if _patch_complete(p)]
-            print(f"[INFO] Completed patches on disk: {len(completed)} / {len(all_dirs)}")
+                def _patch_complete(p):
+                    p = Path(p)
+                    if not (p / "segmentation_counts.loom").exists():
+                        return False
+                    return (p / "segmentation_polygons.json").exists() or \
+                           (p / "segmentation.json").exists()
 
-            if not completed:
-                raise RuntimeError(
-                    "No completed Baysor patches found on disk — cannot recover. "
-                    "Check baysor logs for the root cause."
-                ) from e
+                completed = [p for p in all_dirs if _patch_complete(p)]
+                print(f"[INFO] Completed patches on disk: {len(completed)} / {len(all_dirs)}")
 
-            min_area = params.get("min_area", 10)
-            resolve(sdata, completed, min_area=min_area, key_added="baysor_boundaries")
-            print(f"[INFO] Resolved from {len(completed)} patch(es) — baysor_boundaries added to sdata")
-    _run()
+                if not completed:
+                    raise RuntimeError(
+                        "No completed Baysor patches found on disk — cannot recover. "
+                        "Check baysor logs for the root cause."
+                    ) from e
+
+                min_area = params.get("min_area", 10)
+                resolve(sdata, completed, min_area=min_area, key_added="baysor_boundaries")
+                print(f"[INFO] Resolved from {len(completed)} patch(es) — baysor_boundaries added to sdata")
+
+        try:
+            _run()
+            break  # success
+        except RuntimeError as e:
+            if not patch_correction:
+                raise
+            next_width = patch_width + patch_correction_step
+            if next_width > patch_correction_max:
+                print(f"[ERROR] Baysor failed at {patch_width}µm and reached max ({patch_correction_max}µm) — giving up.")
+                raise
+            print(f"[WARN] Baysor failed at {patch_width}µm — retrying at {next_width}µm")
+            patch_width = next_width
 
     aggregate_and_save(
         sdata, output_dir, args.sample_id,

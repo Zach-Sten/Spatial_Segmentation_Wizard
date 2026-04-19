@@ -500,6 +500,16 @@ def wizard():
             print(f"  {CHECK} Baysor prior: {BOLD}{prior_key}{RESET}")
         print(f"  {DIM}Tip: if Baysor fails, try decreasing patch sizes first; as a fallback, rerun with no prior.{RESET}")
 
+        print()
+        raw = prompt("  Auto-retry with larger patches if Baysor fails? [y/n]", default="n").strip().lower() or "n"
+        if raw == "y":
+            METHOD_DEFAULTS["baysor"]["params"]["patch_error_correction"] = True
+            METHOD_DEFAULTS["baysor"]["params"]["patch_correction_max"] = 1500
+            METHOD_DEFAULTS["baysor"]["params"]["patch_correction_step"] = 100
+            print(f"  {CHECK} Patch auto-retry enabled — will step up by 100µm up to 1500µm on failure")
+        else:
+            METHOD_DEFAULTS["baysor"]["params"]["patch_error_correction"] = False
+
     # Ask ComSeg prior if selected
     if "comseg" in selected:
         print()
