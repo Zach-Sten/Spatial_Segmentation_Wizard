@@ -77,14 +77,6 @@ python segmentation_wizard.py
 python segmentation_wizard.py --config config/my_config.yaml
 ```
 
-### Test locally (no HPC needed)
-
-```bash
-python setup_test_data.py
-python segmentation_wizard.py --config config/test_config.yaml
-ls scripts/slurm/generated/
-```
-
 ## Output
 
 Results are written into `{method}_reseg/` folders alongside your raw data. Raw data is never modified. Each completed sample produces:
