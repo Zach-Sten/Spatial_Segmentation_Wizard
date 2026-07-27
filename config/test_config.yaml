@@ -27,7 +27,6 @@ paths:
 # Notifications — optional email and/or text on job completion/failure
 notifications:
   email: ""                       # e.g. "you@institute.edu"
-  phone: ""                       # e.g. "5551234567" (just the number, no carrier needed)
 
 slurm:
   partition: ""

@@ -9,7 +9,6 @@ Called by the generated SLURM script with sample-specific paths:
 import os
 import sys
 import time
-import argparse
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -17,7 +16,7 @@ import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.config_loader import load_config, get_method_config
-from utils.data_io import configure_threads, save_run_metadata, timed
+from utils.data_io import runner_parser, configure_threads, save_run_metadata, timed
 
 
 def get_panel_genes(sample_dir: Path):
@@ -126,11 +125,7 @@ def prepare_bidcell_reference(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run BIDCell segmentation (single sample)")
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--sample-dir", required=True)
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--sample-id", required=True)
+    parser = runner_parser("Run BIDCell segmentation (single sample)")
     parser.add_argument("--bidcell-config", default=None,
                         help="Pre-existing BIDCell YAML config (skips generation)")
     parser.add_argument("--reference-path", default=None,

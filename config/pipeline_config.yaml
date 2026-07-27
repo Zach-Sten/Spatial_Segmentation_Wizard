@@ -25,7 +25,7 @@ project:
 # ── Data Discovery ──
 # Set exactly ONE of: experiment_dir or sample_dir
 data:
-  platform: "xenium"                # xenium | cosmx | merscope | stereoseq
+  platform: "xenium"                # only xenium is supported today
 
   # Reference scRNA-seq dataset — used by classifier, BIDCell, and FastReseg
   reference_path: ""              # Path to labeled reference .h5ad
@@ -74,7 +74,8 @@ paths:
   # Example: "/scratch/user/segmentation_results"
   output_base_override: ""
 
-  container_sif: "/krummellab/data1/zachsten/sif_containers/seg_singularity/seg_sin_v4.sif"
+  # Path to the built .sif on your cluster. Checked at generation time.
+  container_sif: "/path/to/seg_sin_v6.sif"
 
 # ── HPC / SLURM Settings ──
 slurm:
@@ -135,8 +136,10 @@ methods:
       patch_overlap: 50
       explorer_mode: "+cbm"
 
+  # Not yet validated end to end — enabling this has no effect, the pipeline
+  # skips it with a warning. See COMING_SOON in scripts/utils/config_loader.py.
   bidcell:
-    enabled: true
+    enabled: false
     slurm:
       mem: "300G"
       cpus_per_task: 8

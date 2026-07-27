@@ -98,10 +98,11 @@ QC output per slide:
 ## Architecture
 
 ```
-segmentation_wizard.py      ← interactive wizard
+segmentation_wizard.py               ← interactive wizard (the only entry point)
         │
+        ├── config/site.yaml         ← cluster settings, edited once per HPC
         ▼
-config/*.yaml                        ← saved configurations
+config/pipeline_*.yaml               ← saved per-experiment configuration
         │
         ▼
 scripts/slurm/generated/             ← one .sh per sample × method
@@ -113,19 +114,38 @@ scripts/python/
         ▼
 scripts/utils/
   data_io.py        ← shared loading, patching, aggregation, export
-  config_loader.py  ← config parsing + sample discovery
-  notify.py         ← email/SMS notifications
+  config_loader.py  ← config parsing, sample discovery, site settings
+  notify_chain.py   ← chain start/finish email notifications
 ```
 
 ## Container
 
-All segmentation methods run inside a single Singularity container (`container/Singularity_spatial_segmentation_v3`). Contains Python 3.10, SOPA, ProSeg, Baysor, Cellpose, BIDCell, FastReseg, CellSPA, Segger, StarDist, Comseg, Bering, scanpy, spatialdata, PyTorch + CUDA, R + spatial packages.
+All segmentation methods run inside a single Singularity container (`container/Singularity_spatial_segmentation_v6`, built from `container/spatial_segmentation_env_v3.yml`). Contains Python 3.10, SOPA, ProSeg, Baysor, Cellpose, BIDCell, FastReseg, CellSPA, Segger, StarDist, Comseg, Bering, scanpy, spatialdata, PyTorch + CUDA, R + spatial packages.
 
+## Running on a different cluster
+
+Everything machine-specific lives in **`config/site.yaml`** — container runtime, GPU resource string, partition and account defaults, bind paths, and any `module load` lines needed before the container runs. It is the only file another site needs to edit; the analysis config stays untouched.
+
+Every key has a built-in default, so a missing or partial `site.yaml` still works. Point at an alternate file with `SEGWIZ_SITE_CONFIG=/path/to/site.yaml`.
+
+Typical port to an Apptainer + module-based cluster:
+
+```yaml
+container_cmd: "apptainer"
+preamble:
+  - "module load apptainer"
+gpu_gres: "gpu:a100:1"        # check: sinfo -o "%P %G"
+gpu_partition: "gpu-shared"
+gpu_account: "your_project"
+extra_binds: ["/scratch"]
+```
+
+`python_bin` points at the interpreter *inside* the container and must stay an absolute path — see the note in `site.yaml` for why bare `python` breaks.
 
 ## Requirements
 
 - **Local:** Python 3.7+ with `pyyaml`
-- **HPC:** Singularity, SLURM, the built `.sif`
+- **HPC:** SLURM, a container runtime (Singularity or Apptainer), the built `.sif`
 - **Notifications:** `sendmail` available on the cluster
 
 ## Future Plans

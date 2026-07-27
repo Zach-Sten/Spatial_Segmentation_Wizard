@@ -18,6 +18,26 @@ from typing import List, Optional
 
 
 # ============================================================================
+# What can actually run
+# ============================================================================
+#
+# Scaffolding exists for these, but they are not validated end to end. They are
+# shown in the wizard as "(coming soon)" and cannot be selected or enabled: a
+# half-working method that silently writes plausible output is far worse than
+# one that isn't offered.
+#
+# To promote a method: delete it from this set, confirm it has an entry in
+# METHOD_SCRIPTS (scripts/slurm/generate_slurm.py), and give it defaults in the
+# wizard's METHOD_DEFAULTS.
+COMING_SOON = {"bidcell", "bering", "segger"}
+
+# Platforms the loader can actually read. Same rule as methods — the wizard
+# offers the rest as "(coming soon)" rather than letting a run fail at load time.
+SUPPORTED_PLATFORMS = {"xenium"}
+COMING_SOON_PLATFORMS = ["cosmx", "merscope", "stereoseq"]
+
+
+# ============================================================================
 # SampleInfo — one discovered sample with all paths resolved
 # ============================================================================
 
@@ -41,15 +61,67 @@ class SampleInfo:
             return Path(output_base_override) / self.slide_name / f"{method}_reseg" / self.sample_id
         return self.slide_dir / f"{method}_reseg" / self.sample_id
 
-    def log_dir(self, output_base_override: str = "") -> Path:
-        """Where SLURM logs go for this sample's slide."""
-        if output_base_override:
-            return Path(output_base_override) / self.slide_name / "logs"
-        return self.slide_dir / "logs"
-
     def log_dir_in_pipeline(self, pipeline_root: str) -> Path:
         """Logs inside the pipeline directory (always writable)."""
         return Path(pipeline_root) / "logs" / self.slide_name
+
+
+# ============================================================================
+# Site config — cluster-specific settings, see config/site.yaml
+# ============================================================================
+
+# Defaults describe the cluster this pipeline was developed on. Any site.yaml
+# key overrides its entry here; anything absent falls back to these values, so
+# a missing or partial site.yaml still produces a working script.
+SITE_DEFAULTS = {
+    "container_cmd": "singularity",
+    "preamble":      [],
+    # Absolute, not bare `python`: the container's %environment prepends
+    # /opt/miniforge3/bin (base conda) to PATH *after* activating the env, so
+    # bare `python` resolves to the base interpreter with none of the
+    # segmentation packages installed.
+    "python_bin":    "/opt/miniforge3/envs/spatial_segmentation_env/bin/python",
+    "gpu_gres":      "gpu:1g.10gb:1",
+    "gpu_partition": "common",
+    "gpu_account":   "common",
+    "extra_binds":   [],
+    "ulimit_nofile": 65536,
+}
+
+_site_cache = None
+_warned_containers = set()
+
+
+def load_site_config(pipeline_root: str = None) -> dict:
+    """Return site settings: SITE_DEFAULTS overlaid with config/site.yaml.
+
+    Looked up in order: $SEGWIZ_SITE_CONFIG, then {pipeline_root}/config/site.yaml.
+    Result is cached — the site does not change within a run.
+    """
+    global _site_cache
+    if _site_cache is not None:
+        return _site_cache
+
+    if pipeline_root is None:
+        pipeline_root = Path(__file__).resolve().parents[2]
+
+    site_path = os.environ.get("SEGWIZ_SITE_CONFIG") or Path(pipeline_root) / "config" / "site.yaml"
+    site = dict(SITE_DEFAULTS)
+
+    if Path(site_path).exists():
+        with open(site_path) as f:
+            loaded = yaml.safe_load(f) or {}
+        unknown = set(loaded) - set(SITE_DEFAULTS)
+        if unknown:
+            # Typos here silently revert to a default and produce a script that
+            # fails minutes into a job, so say so at generation time instead.
+            print(f"[WARN] Ignoring unknown key(s) in {site_path}: {', '.join(sorted(unknown))}")
+        site.update({k: v for k, v in loaded.items() if k in SITE_DEFAULTS})
+    else:
+        print(f"[INFO] No site.yaml at {site_path} — using built-in cluster defaults")
+
+    _site_cache = site
+    return site
 
 
 # ============================================================================
@@ -74,6 +146,14 @@ def load_config(config_path: str) -> dict:
         raise ValueError("Config missing paths.container_sif")
 
     data = cfg["data"]
+
+    platform = data.get("platform", "xenium")
+    if platform not in SUPPORTED_PLATFORMS:
+        raise ValueError(
+            f"Platform '{platform}' is not supported yet. "
+            f"Currently available: {', '.join(sorted(SUPPORTED_PLATFORMS))}."
+        )
+
     has_experiment = bool(data.get("experiment_dir"))
     has_slide = bool(data.get("slide_dir"))
     has_sample = bool(data.get("sample_dir"))
@@ -264,27 +344,47 @@ def get_output_base_override(cfg: dict) -> str:
 
 
 def get_container_path(cfg: dict) -> str:
-    """Return the .sif container path, resolved to absolute."""
-    return str(Path(cfg["paths"]["container_sif"]).resolve())
+    """Return the .sif container path, resolved to absolute.
+
+    Only warns if missing — generating scripts on a machine without the
+    container is a supported dry-run workflow. Submitting with a bad path is
+    not; check_container_exists() enforces that at submit time.
+    """
+    container = Path(cfg["paths"]["container_sif"]).resolve()
+    # Called once per generated script; warn on the first miss only.
+    if not container.exists() and container not in _warned_containers:
+        _warned_containers.add(container)
+        print(f"[WARN] Container not found (fine for a dry run): {container}")
+    return str(container)
+
+
+def check_container_exists(cfg: dict):
+    """Hard-fail before submitting. Without this, a stale path in the config
+    submits every job successfully and each one dies seconds later."""
+    container = Path(cfg["paths"]["container_sif"]).resolve()
+    if not container.exists():
+        raise FileNotFoundError(
+            f"Container not found: {container}\n"
+            f"Fix paths.container_sif in your config before submitting."
+        )
 
 
 def list_enabled_methods(cfg: dict) -> list:
-    """Return list of method names that are enabled."""
-    return [
+    """Return enabled methods, minus any that aren't runnable yet.
+
+    Filtering here rather than in the wizard means a hand-edited config cannot
+    slip a coming-soon method past the interactive menu.
+    """
+    enabled = [
         name for name, mcfg in cfg.get("methods", {}).items()
         if mcfg.get("enabled", True)
     ]
+    blocked = [m for m in enabled if m in COMING_SOON]
+    if blocked:
+        print(f"[WARN] Not yet available, skipping: {', '.join(sorted(blocked))}")
+    return [m for m in enabled if m not in COMING_SOON]
 
 
 def is_slide_mode(cfg: dict) -> bool:
     """True when config uses slide_dir mode (multiple samples in one folder)."""
     return bool(cfg.get("data", {}).get("slide_dir"))
-
-
-def ensure_sample_dirs(sample: SampleInfo, method: str, output_base: str = "") -> Path:
-    """Create output + log directories for a sample/method combo. Returns output dir."""
-    out_dir = sample.output_dir(method, output_base)
-    log_dir = sample.log_dir(output_base)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir

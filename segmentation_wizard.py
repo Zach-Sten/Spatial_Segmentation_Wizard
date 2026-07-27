@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scripts"))
 from utils.config_loader import (
     load_config, discover_samples, list_enabled_methods,
     get_method_config, get_output_base_override, is_slide_mode, SampleInfo,
+    check_container_exists, COMING_SOON, SUPPORTED_PLATFORMS, COMING_SOON_PLATFORMS,
 )
 from slurm.generate_slurm import (
     generate_slurm_script, generate_classifier_script,
@@ -80,7 +81,7 @@ def banner():
     print(f"  ·    ✧      ✦  ·       ✧   ·    ✦      ·  ✧     ✦  ·")
     print(f"    ✦     ·  ✧      ·  ✦    ✧     ·   ✦    ·    ✧")
     print(f"{RESET}")
-    print(f"  {PURPLE}✦ SOPA · ProSeg · Baysor · Cellpose · BIDCell · FastReseg · CellSPA ✦{RESET}")
+    print(f"  {PURPLE}✦ SOPA · ProSeg · Baysor · Cellpose · StarDist · ComSeg · FastReseg · CellSPA ✦{RESET}")
     print(f"{'━' * w}")
     print()
 
@@ -108,18 +109,27 @@ def prompt(label, default=None, required=True):
         print(f"  {RED}Required field.{RESET}")
 
 
-def prompt_choice(label, options, default=None):
-    """Prompt to choose from numbered options."""
+def prompt_choice(label, options, default=None, coming_soon=()):
+    """Prompt to choose from numbered options.
+
+    coming_soon entries are listed unnumbered so the roadmap is visible, but
+    they cannot be picked.
+    """
     print(f"  {label}")
     for i, opt in enumerate(options, 1):
         marker = f"{GREEN}*{RESET}" if opt == default else " "
         print(f"   {marker} {i}) {opt}")
+    for opt in coming_soon:
+        print(f"     {DIM}—) {opt} (coming soon){RESET}")
 
     while True:
         hint = f" [{options.index(default) + 1}]" if default else ""
         val = input(f"  Choice{hint}: ").strip()
         if not val and default:
             return default
+        if val in coming_soon:
+            print(f"  {YELLOW}{val} is not available yet.{RESET}")
+            continue
         try:
             idx = int(val)
             if 1 <= idx <= len(options):
@@ -139,10 +149,11 @@ def prompt_yn(label, default=True):
     return val in ("y", "yes")
 
 
-def prompt_multi(label, options, defaults=None, marked=None):
+def prompt_multi(label, options, defaults=None, marked=None, coming_soon=()):
     """Select multiple from a list. Returns list of selected.
 
     marked: set of options that get the checkmark indicator (defaults to defaults set).
+    coming_soon: listed unnumbered for visibility, but not selectable.
     """
     if defaults is None:
         defaults = options[:]
@@ -152,6 +163,8 @@ def prompt_multi(label, options, defaults=None, marked=None):
     for i, opt in enumerate(options, 1):
         marker = CHECK if opt in _marked else " "
         print(f"   {marker} {i}) {opt}")
+    for opt in coming_soon:
+        print(f"     {DIM}—) {opt} (coming soon){RESET}")
 
     print(f"  {DIM}Enter numbers separated by spaces, or 'all' / 'none'{RESET}")
     val = input(f"  Select [{','.join(str(options.index(d)+1) for d in defaults)}]: ").strip().strip("'\"")
@@ -165,6 +178,9 @@ def prompt_multi(label, options, defaults=None, marked=None):
 
     selected = []
     for tok in val.replace(",", " ").split():
+        if tok in coming_soon:
+            print(f"  {YELLOW}{tok} is not available yet — skipping.{RESET}")
+            continue
         try:
             idx = int(tok)
             if 1 <= idx <= len(options):
@@ -310,6 +326,166 @@ def path_prompt(label, default=None, must_exist=False, required=True):
 
 
 # ============================================================================
+# Method settings
+# ============================================================================
+
+MEM_DEFAULTS = {
+    "proseg": "400G", "baysor": "600G", "cellpose": "200G",
+    "stardist": "200G", "comseg": "300G", "fastreseg": "400G",
+}
+
+GPU_METHODS   = {"cellpose"}
+SOPA_METHODS  = {"baysor", "proseg", "cellpose", "stardist", "comseg"}
+
+
+def _customize_method_settings(selected, method_defaults):
+    """Walk through per-method settings. Mutates method_defaults in place.
+
+    Returns (fastreseg_source, fastreseg_mem) — fastreseg has no method_defaults
+    entry, so its two settings come back by value.
+    """
+    # ── GPU ──
+    gpu_partition = None  # asked once, shared by all GPU methods
+    print()
+    for method in [m for m in selected if m in GPU_METHODS]:
+        if prompt_yn(f"Use GPU for {method}?", default=True):
+            if gpu_partition is None:
+                gpu_partition = prompt("  GPU partition", default="common").strip() or "common"
+            method_defaults[method]["slurm"]["partition"] = gpu_partition
+        else:
+            method_defaults[method]["slurm"]["gpu"] = False
+            if method == "cellpose":
+                method_defaults[method]["params"]["gpu"] = False
+
+    # ── SOPA patch sizes ──
+    sopa_selected = [m for m in selected if m in SOPA_METHODS]
+    if sopa_selected:
+        print()
+        print(f"  {BOLD}SOPA patch settings{RESET} {DIM}({' / '.join(sopa_selected)}){RESET}")
+        print(f"  {DIM}Larger patches = more transcripts per patch = more stable segmentation{RESET}")
+        print(f"  {DIM}Note: one value is applied to every SOPA method, replacing their{RESET}")
+        print(f"  {DIM}individual defaults (proseg 1200, baysor 500, comseg 200).{RESET}")
+        transcript_patch_width = int(prompt("  Transcript patch width (µm)", default="500").strip() or "500")
+        image_patch_width      = int(prompt("  Image patch width (px)",      default="1200").strip() or "1200")
+        for m in sopa_selected:
+            if "patch_width" in method_defaults[m]["params"]:
+                method_defaults[m]["params"]["patch_width"] = transcript_patch_width
+            if "image_patch_width" in method_defaults[m]["params"]:
+                method_defaults[m]["params"]["image_patch_width"] = image_patch_width
+
+    # ── Baysor prior + auto-retry ──
+    if "baysor" in selected:
+        print()
+        print(f"  {BOLD}Baysor prior segmentation{RESET}")
+        prior_key = _prompt_prior([
+            ("cell_boundaries",    "Xenium native (default) — use native Xenium cell boundaries"),
+            ("cellpose_boundaries","Cellpose — use cellpose output as prior (requires cellpose)"),
+            ("none",               "No prior — transcript-only, not recommended unless all else fails"),
+        ])
+        if prior_key == "none":
+            method_defaults["baysor"]["params"].pop("prior_shapes_key", None)
+            print(f"  {CHECK} Baysor prior: {BOLD}none (transcript-only){RESET}")
+        else:
+            method_defaults["baysor"]["params"]["prior_shapes_key"] = prior_key
+            print(f"  {CHECK} Baysor prior: {BOLD}{prior_key}{RESET}")
+        print(f"  {DIM}Tip: if Baysor fails, try decreasing patch sizes first; as a fallback, rerun with no prior.{RESET}")
+
+        print()
+        retry = prompt("  Auto-retry with larger patches if Baysor fails? [y/n]", default="n").strip().lower() or "n"
+        if retry == "y":
+            method_defaults["baysor"]["params"].update({
+                "patch_error_correction": True,
+                "patch_correction_max": 1500,
+                "patch_correction_step": 100,
+            })
+            print(f"  {CHECK} Patch auto-retry enabled — will step up by 100µm up to 1500µm on failure")
+        else:
+            method_defaults["baysor"]["params"]["patch_error_correction"] = False
+
+    # ── ComSeg prior ──
+    if "comseg" in selected:
+        print()
+        print(f"  {BOLD}ComSeg prior segmentation{RESET} {DIM}(required — provides cell centroid seeds){RESET}")
+        comseg_prior = _prompt_prior([
+            ("cell_boundaries",     "Xenium native (default) — use native Xenium cell boundaries"),
+            ("cellpose_boundaries", "Cellpose — use cellpose output as prior (requires cellpose)"),
+            ("stardist_boundaries", "StarDist — use stardist output as prior (requires stardist)"),
+        ])
+        method_defaults["comseg"]["params"]["prior_shapes_key"] = comseg_prior
+        print(f"  {CHECK} ComSeg prior: {BOLD}{comseg_prior}{RESET}")
+
+    # ── FastReseg source ──
+    fastreseg_source = "xenium"
+    if "fastreseg" in selected:
+        available_sources = ["xenium", "proseg", "baysor", "cellpose"]
+        print()
+        print(f"  {BOLD}FastReseg{RESET} — which segmentation to refine?")
+        for i, src in enumerate(available_sources, 1):
+            label = "10x Xenium (original)" if src == "xenium" else src
+            default_marker = f"  {DIM}← default{RESET}" if i == 1 else ""
+            print(f"    {i}. {label}{default_marker}")
+        raw = prompt(f"  Choice [1-{len(available_sources)}]", default="1")
+        try:
+            idx = int(raw.strip()) - 1
+            fastreseg_source = available_sources[idx] if 0 <= idx < len(available_sources) else "xenium"
+        except (ValueError, IndexError):
+            fastreseg_source = "xenium"
+        label = "10x Xenium (original)" if fastreseg_source == "xenium" else fastreseg_source
+        print(f"  {CHECK} FastReseg will refine: {BOLD}{label}{RESET}")
+
+    # ── Memory ──
+    fastreseg_mem = MEM_DEFAULTS["fastreseg"]
+    if selected:
+        print()
+        print(f"  {BOLD}Memory per method{RESET} {DIM}(adjust if OOM errors occur){RESET}")
+        for m in selected:
+            default_mem = MEM_DEFAULTS.get(m, "400G")
+            mem = prompt(f"  {m} memory (e.g. 400G)", default=default_mem).strip() or default_mem
+            if mem[-1].isdigit():
+                mem += "G"
+            if m in method_defaults:
+                method_defaults[m]["slurm"]["mem"] = mem
+            elif m == "fastreseg":
+                fastreseg_mem = mem
+
+    return fastreseg_source, fastreseg_mem
+
+
+def _prompt_prior(options):
+    """Numbered prior-segmentation picker. Returns the chosen key, first as default."""
+    for i, (_, desc) in enumerate(options, 1):
+        default_marker = f"  {DIM}← default{RESET}" if i == 1 else ""
+        print(f"    {i}. {desc}{default_marker}")
+    raw = prompt(f"  Choice [1-{len(options)}]", default="1").strip() or "1"
+    try:
+        idx = int(raw) - 1
+        return options[idx][0] if 0 <= idx < len(options) else options[0][0]
+    except (ValueError, IndexError):
+        return options[0][0]
+
+
+def _print_default_settings(selected, method_defaults):
+    """Show what the defaults resolved to, so 'default' isn't a black box."""
+    print()
+    print(f"  {BOLD}Using default settings{RESET}")
+    for m in selected:
+        params = method_defaults.get(m, {}).get("params", {})
+        slurm  = method_defaults.get(m, {}).get("slurm", {})
+        bits   = [slurm.get("mem", MEM_DEFAULTS.get(m, "400G"))]
+        if slurm.get("gpu"):
+            bits.append("GPU")
+        if "patch_width" in params:
+            bits.append(f"patch {params['patch_width']}")
+        if params.get("prior_shapes_key"):
+            bits.append(f"prior {params['prior_shapes_key']}")
+        if m == "fastreseg":
+            # No method_defaults entry — its one setting is the source segmentation.
+            bits.append("refines 10x Xenium (original)")
+        print(f"    {CHECK} {m:12s} {DIM}{'  ·  '.join(bits)}{RESET}")
+    print(f"\n  {DIM}Re-run and pick 'custom' to change any of these.{RESET}")
+
+
+# ============================================================================
 # Config wizard
 # ============================================================================
 
@@ -335,7 +511,8 @@ def wizard():
     # ── Data ──
     section("Data")
     cfg["data"]["platform"] = prompt_choice(
-        "Platform:", ["xenium", "cosmx", "merscope", "stereoseq"], default="xenium"
+        "Platform:", sorted(SUPPORTED_PLATFORMS), default="xenium",
+        coming_soon=COMING_SOON_PLATFORMS,
     )
 
     data_mode = prompt_choice(
@@ -401,13 +578,14 @@ def wizard():
     # ── Methods ──
     section("Segmentation Methods")
 
-    all_methods = ["proseg", "baysor", "cellpose", "stardist", "comseg", "bidcell", "fastreseg"]
+    all_methods = ["proseg", "baysor", "cellpose", "stardist", "comseg", "fastreseg"]
 
     SOPA_MANAGED = {"proseg", "baysor", "cellpose", "stardist", "comseg"}
     selected = prompt_multi(
         f"Which methods to run? {DIM}(✓ = SOPA-managed){RESET}", all_methods,
         defaults=["proseg", "baysor", "cellpose"],
         marked=SOPA_MANAGED,
+        coming_soon=sorted(COMING_SOON),
     )
 
     METHOD_DEFAULTS = {
@@ -426,10 +604,6 @@ def wizard():
             "params": {"channels": ["DAPI"], "diameter": 35, "gpu": True,
                        "patch_width": 1200, "patch_overlap": 50, "explorer_mode": "+cbm"},
         },
-        "bidcell": {
-            "slurm": {"mem": "300G", "cpus_per_task": 8, "gpu": True, "time": "3-00:00:00"},
-            "params": {"config_template": "xenium", "explorer_mode": "+cbm"},
-        },
         "stardist": {
             "slurm": {"mem": "200G", "cpus_per_task": 8, "time": "2-00:00:00"},
             "params": {"channels": ["DAPI"], "model_type": "2D_versatile_fluo",
@@ -443,137 +617,25 @@ def wizard():
         },
     }
 
-    # Ask GPU/CPU for any selected GPU-capable methods
-    GPU_METHODS = {"cellpose", "bidcell"}
-    gpu_partition = None  # ask once if any GPU method is enabled
-    print()
-    for method in [m for m in selected if m in GPU_METHODS]:
-        use_gpu = prompt_yn(f"Use GPU for {method}?", default=True)
-        if not use_gpu:
-            METHOD_DEFAULTS[method]["slurm"]["gpu"] = False
-            if method == "cellpose":
-                METHOD_DEFAULTS[method]["params"]["gpu"] = False
+    # ── Default or custom settings ──
+    fastreseg_source = "xenium"
+    fastreseg_mem    = MEM_DEFAULTS["fastreseg"]
+    if selected:
+        print()
+        mode = prompt_choice(
+            "Method settings:", ["default", "custom"], default="default",
+        )
+        if mode == "custom":
+            fastreseg_source, fastreseg_mem = _customize_method_settings(selected, METHOD_DEFAULTS)
         else:
-            # Ask for GPU partition once (GPU nodes are often in a specific partition)
-            if gpu_partition is None:
-                gpu_partition = prompt("  GPU partition", default="common").strip() or "common"
-            METHOD_DEFAULTS[method]["slurm"]["partition"] = gpu_partition
+            _print_default_settings(selected, METHOD_DEFAULTS)
 
-    # Ask patch sizes for SOPA-based methods
-    SOPA_METHODS = {"baysor", "proseg", "cellpose", "stardist", "comseg"}
-    sopa_selected = [m for m in selected if m in SOPA_METHODS]
-    if sopa_selected:
-        print()
-        print(f"  {BOLD}SOPA patch settings{RESET} {DIM}(baysor / proseg / cellpose / stardist / comseg){RESET}")
-        print(f"  {DIM}Larger patches = more transcripts per patch = more stable segmentation{RESET}")
-        transcript_patch_width = int(prompt("  Transcript patch width (µm)", default="500").strip() or "500")
-        image_patch_width      = int(prompt("  Image patch width (px)",      default="1200").strip() or "1200")
-        for m in sopa_selected:
-            if "patch_width" in METHOD_DEFAULTS[m]["params"]:
-                METHOD_DEFAULTS[m]["params"]["patch_width"] = transcript_patch_width
-            if "image_patch_width" in METHOD_DEFAULTS[m]["params"]:
-                METHOD_DEFAULTS[m]["params"]["image_patch_width"] = image_patch_width
-
-    # Ask Baysor prior if selected
-    if "baysor" in selected:
-        print()
-        print(f"  {BOLD}Baysor prior segmentation{RESET}")
-        prior_options = [
-            ("cell_boundaries",    "Xenium native (default) — use native Xenium cell boundaries"),
-            ("cellpose_boundaries","Cellpose — use cellpose output as prior (requires cellpose)"),
-            ("none",               "No prior — transcript-only, not recommended unless all else fails"),
-        ]
-        for i, (key, desc) in enumerate(prior_options, 1):
-            default_marker = f"  {DIM}← default{RESET}" if i == 1 else ""
-            print(f"    {i}. {desc}{default_marker}")
-        raw = prompt("  Choice [1-3]", default="1").strip() or "1"
-        try:
-            idx = int(raw) - 1
-            prior_key = prior_options[idx][0] if 0 <= idx < len(prior_options) else "cell_boundaries"
-        except (ValueError, IndexError):
-            prior_key = "cell_boundaries"
-        if prior_key == "none":
-            METHOD_DEFAULTS["baysor"]["params"].pop("prior_shapes_key", None)
-            print(f"  {CHECK} Baysor prior: {BOLD}none (transcript-only){RESET}")
-        else:
-            METHOD_DEFAULTS["baysor"]["params"]["prior_shapes_key"] = prior_key
-            print(f"  {CHECK} Baysor prior: {BOLD}{prior_key}{RESET}")
-        print(f"  {DIM}Tip: if Baysor fails, try decreasing patch sizes first; as a fallback, rerun with no prior.{RESET}")
-
-        print()
-        raw = prompt("  Auto-retry with larger patches if Baysor fails? [y/n]", default="n").strip().lower() or "n"
-        if raw == "y":
-            METHOD_DEFAULTS["baysor"]["params"]["patch_error_correction"] = True
-            METHOD_DEFAULTS["baysor"]["params"]["patch_correction_max"] = 1500
-            METHOD_DEFAULTS["baysor"]["params"]["patch_correction_step"] = 100
-            print(f"  {CHECK} Patch auto-retry enabled — will step up by 100µm up to 1500µm on failure")
-        else:
-            METHOD_DEFAULTS["baysor"]["params"]["patch_error_correction"] = False
-
-    # Ask ComSeg prior if selected
-    if "comseg" in selected:
-        print()
-        print(f"  {BOLD}ComSeg prior segmentation{RESET} {DIM}(required — provides cell centroid seeds){RESET}")
-        comseg_prior_options = [
-            ("cell_boundaries",      "Xenium native (default) — use native Xenium cell boundaries"),
-            ("cellpose_boundaries",  "Cellpose — use cellpose output as prior (requires cellpose)"),
-            ("stardist_boundaries",  "StarDist — use stardist output as prior (requires stardist)"),
-        ]
-        for i, (key, desc) in enumerate(comseg_prior_options, 1):
-            default_marker = f"  {DIM}← default{RESET}" if i == 1 else ""
-            print(f"    {i}. {desc}{default_marker}")
-        raw = prompt("  Choice [1-3]", default="1").strip() or "1"
-        try:
-            idx = int(raw) - 1
-            comseg_prior = comseg_prior_options[idx][0] if 0 <= idx < len(comseg_prior_options) else "cell_boundaries"
-        except (ValueError, IndexError):
-            comseg_prior = "cell_boundaries"
-        METHOD_DEFAULTS["comseg"]["params"]["prior_shapes_key"] = comseg_prior
-        print(f"  {CHECK} ComSeg prior: {BOLD}{comseg_prior}{RESET}")
-
-    # Download StarDist models on first use
+    # Download StarDist models on first use. Not a setting — the compute nodes
+    # have no internet, so the cache must be populated from here either way.
     if "stardist" in selected:
         seg_models_dir = Path(os.getcwd()) / "seg_models"
         stardist_cache = ensure_stardist_models(seg_models_dir)
         cfg["data"]["seg_models_path"] = stardist_cache
-
-    # Ask FastReseg source method if selected
-    fastreseg_source = "xenium"
-    if "fastreseg" in selected:
-        available_sources = ["xenium", "proseg", "baysor", "cellpose", "bidcell"]
-        print()
-        print(f"  {BOLD}FastReseg{RESET} — which segmentation to refine?")
-        for i, src in enumerate(available_sources, 1):
-            label = "10x Xenium (original)" if src == "xenium" else src
-            default_marker = f"  {DIM}← default{RESET}" if i == 1 else ""
-            print(f"    {i}. {label}{default_marker}")
-        raw = prompt(f"  Choice [1-{len(available_sources)}]", default="1")
-        try:
-            idx = int(raw.strip()) - 1
-            fastreseg_source = available_sources[idx] if 0 <= idx < len(available_sources) else "xenium"
-        except (ValueError, IndexError):
-            fastreseg_source = "xenium"
-        label = "10x Xenium (original)" if fastreseg_source == "xenium" else fastreseg_source
-        print(f"  {CHECK} FastReseg will refine: {BOLD}{label}{RESET}")
-
-    # Ask memory per selected method
-    MEM_DEFAULTS = {
-        "proseg": "400G", "baysor": "600G", "cellpose": "200G",
-        "bidcell": "300G", "stardist": "200G", "comseg": "300G", "fastreseg": "400G",
-    }
-    fastreseg_mem = "400G"
-    if selected:
-        print()
-        print(f"  {BOLD}Memory per method{RESET} {DIM}(adjust if OOM errors occur){RESET}")
-        for m in selected:
-            default_mem = MEM_DEFAULTS.get(m, "400G")
-            mem = prompt(f"  {m} memory (e.g. 400G)", default=default_mem).strip() or default_mem
-            if mem[-1].isdigit():
-                mem += "G"
-            if m in METHOD_DEFAULTS:
-                METHOD_DEFAULTS[m]["slurm"]["mem"] = mem
-            elif m == "fastreseg":
-                fastreseg_mem = mem
 
     for method in all_methods:
         enabled = method in selected
@@ -671,12 +733,6 @@ def wizard():
         "params": {"methods_to_qc": selected},
     }
 
-    cfg["methods"]["celltype_qc"] = {
-        "enabled": False,
-        "slurm": {"mem": "100G", "cpus_per_task": 4, "time": "0-06:00:00"},
-        "params": {},
-    }
-
     # ── SLURM defaults (edit the saved YAML for custom partition/account) ──
     cfg["slurm"] = {
         "partition": "", "account": "", "email": "", "mail_type": "END,FAIL",
@@ -752,7 +808,7 @@ def print_config_review(cfg):
 
 
 # ============================================================================
-# Submit logic (reused from launch_pipeline.py)
+# Submit logic
 # ============================================================================
 
 def submit_job(script_path, dependency_ids=None, afterany=False):
@@ -778,8 +834,6 @@ def _generate_chain_notify_script(
     """Generate a lightweight SLURM script that sends the chain summary email."""
     notif      = cfg.get("notifications", {})
     email      = notif.get("email", "")
-    phone      = notif.get("phone", "")
-    phone_arg  = f"--phone {phone}" if phone else ""
     attach_args = " ".join(f'"{p}"' for p in qc_pdf_paths) if qc_pdf_paths else ""
 
     lines = [
@@ -797,10 +851,6 @@ def _generate_chain_notify_script(
         "",
         f"python scripts/utils/notify_chain.py \\",
         f"    --email {email} \\",
-    ]
-    if phone_arg:
-        lines.append(f"    {phone_arg} \\")
-    lines += [
         f"    --manifest {manifest_path} \\",
         f"    --event finish \\",
     ]
@@ -815,10 +865,12 @@ def _generate_chain_notify_script(
 def generate_and_submit(cfg, config_path, do_submit=False):
     """Generate SLURM scripts and optionally submit them."""
     import json, subprocess as _sp
+    if do_submit:
+        check_container_exists(cfg)
     samples = discover_samples(cfg)
     methods = list_enabled_methods(cfg)
 
-    _skip = {"cellspa_qc", "fastreseg", "classifier", "celltype_qc", "xenium_export"}
+    _skip = {"cellspa_qc", "fastreseg", "classifier", "xenium_export"}
     primary = [m for m in methods if m not in _skip]
     post = [m for m in methods if m == "fastreseg"]
     run_qc = "cellspa_qc" in methods
@@ -847,7 +899,6 @@ def generate_and_submit(cfg, config_path, do_submit=False):
 
     notif       = cfg.get("notifications", {})
     notify_email = notif.get("email", "")
-    notify_phone = notif.get("phone", "")
     has_notify   = bool(notify_email)
 
     # QC PDF paths (one per sample in single mode; one combined in multi-sample mode)
@@ -957,7 +1008,11 @@ def generate_and_submit(cfg, config_path, do_submit=False):
 
                 if do_submit:
                     post_deps = seg_ids + xenium_export_ids
-                    jid = submit_job(spath, dependency_ids=post_deps if post_deps else None)
+                    # afterany: fastreseg only needs its own source_method. If that
+                    # is missing it fails fast with a clear error, which beats being
+                    # blocked forever because an unrelated method failed.
+                    jid = submit_job(spath, dependency_ids=post_deps if post_deps else None,
+                                     afterany=True)
                     if jid:
                         all_job_ids.append(jid)
                         all_seg_post_ids.append(jid)
@@ -996,7 +1051,9 @@ def generate_and_submit(cfg, config_path, do_submit=False):
 
         if do_submit:
             dep = all_seg_post_ids + xenium_export_ids or None
-            jid = submit_job(spath, dependency_ids=dep)
+            # afterany: classify whatever finished. With afterok a single failed
+            # method leaves this job DependencyNeverSatisfied and nothing downstream runs.
+            jid = submit_job(spath, dependency_ids=dep, afterany=True)
             if jid:
                 classify_id = jid
                 all_job_ids.append(jid)
@@ -1012,6 +1069,9 @@ def generate_and_submit(cfg, config_path, do_submit=False):
         print()
 
     # ── Pass 2: QC (depends on seg + classifier) ──
+    # All QC dependencies are afterany, not afterok. QC discovers which methods
+    # actually produced output and reports on those, so a partial run still
+    # yields a comparison — and one flaky method cannot suppress the whole report.
     if run_qc:
         wait = all_seg_post_ids + ([classify_id] if classify_id else [])
 
@@ -1024,7 +1084,7 @@ def generate_and_submit(cfg, config_path, do_submit=False):
             os.chmod(spath, 0o755)
             all_scripts.append(spath)
             if do_submit:
-                jid = submit_job(spath, dependency_ids=wait if wait else None)
+                jid = submit_job(spath, dependency_ids=wait if wait else None, afterany=True)
                 if jid:
                     all_job_ids.append(jid)
                     chain_manifest["jobs"].append(
@@ -1037,7 +1097,7 @@ def generate_and_submit(cfg, config_path, do_submit=False):
         elif do_submit:
             # Per-sample QC (single/experiment mode)
             for spath, sample in qc_scripts:
-                jid = submit_job(spath, dependency_ids=wait if wait else None)
+                jid = submit_job(spath, dependency_ids=wait if wait else None, afterany=True)
                 if jid:
                     all_job_ids.append(jid)
                     chain_manifest["jobs"].append(
@@ -1132,7 +1192,19 @@ def generate_and_submit(cfg, config_path, do_submit=False):
 def main():
     parser = argparse.ArgumentParser(description="Spatial Segmentation Pipeline — Interactive Launcher")
     parser.add_argument("--config", help="Skip wizard, use existing config YAML")
+    parser.add_argument("--list", action="store_true",
+                        help="List discovered samples for --config and exit")
     args = parser.parse_args()
+
+    if args.list:
+        if not args.config:
+            parser.error("--list requires --config")
+        samples = discover_samples(load_config(os.path.realpath(args.config)))
+        print(f"\nDiscovered {len(samples)} sample(s):\n")
+        for s in samples:
+            print(f"  {s.slide_name}/{s.sample_id}  {DIM}← {s.sample_dir.name}{RESET}")
+        print()
+        return
 
     if args.config:
         # Direct mode — load existing config
@@ -1165,16 +1237,14 @@ def main():
             for s in ss:
                 print(f"    {ARROW} {s.sample_id}")
 
-        skip = {"cellspa_qc", "classifier", "celltype_qc"}
+        skip = {"cellspa_qc", "classifier"}
         enabled = [m for m, mc in cfg.get("methods", {}).items() if mc.get("enabled") and m not in skip]
-        qc_enabled         = cfg.get("methods", {}).get("cellspa_qc",   {}).get("enabled", False)
-        classifier_enabled = cfg.get("methods", {}).get("classifier",   {}).get("enabled", False)
-        celltype_qc_enabled = cfg.get("methods", {}).get("celltype_qc", {}).get("enabled", False)
+        qc_enabled         = cfg.get("methods", {}).get("cellspa_qc", {}).get("enabled", False)
+        classifier_enabled = cfg.get("methods", {}).get("classifier", {}).get("enabled", False)
         method_str = ", ".join(enabled) if enabled else f"{DIM}none{RESET}"
         extra = []
         if qc_enabled:          extra.append("CellSPA QC")
         if classifier_enabled:  extra.append("classifier")
-        if celltype_qc_enabled: extra.append("cell type QC")
         extra_str = (" + " + ", ".join(extra)) if extra else ""
         print(f"\n  {BOLD}Total: {len(samples)} sample(s){RESET}")
         print(f"  {BOLD}Methods:{RESET} {method_str}{extra_str}\n")

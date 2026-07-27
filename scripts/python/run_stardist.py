@@ -24,13 +24,13 @@ import os
 import sys
 import time
 import shutil
-import argparse
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.config_loader import load_config, get_method_config
 from utils.data_io import (
+    runner_parser,
     configure_threads, configure_dask, load_platform_data,
     aggregate_and_save, save_run_metadata, timed,
 )
@@ -176,12 +176,7 @@ def _install_worker_patch(src_model_dir: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run StarDist segmentation (single sample)")
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--sample-dir", required=True)
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--sample-id", required=True)
-    args = parser.parse_args()
+    args = runner_parser("Run StarDist segmentation (single sample)").parse_args()
 
     cfg = load_config(args.config)
     method_cfg = get_method_config(cfg, "stardist")

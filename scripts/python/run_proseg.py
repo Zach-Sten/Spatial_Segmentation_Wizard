@@ -9,25 +9,20 @@ Called by the generated SLURM script with sample-specific paths:
 import os
 import sys
 import time
-import argparse
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.config_loader import load_config, get_method_config
 from utils.data_io import (
+    runner_parser,
     configure_threads, load_platform_data, prepare_patches,
     aggregate_and_save, replace_proseg_counts, save_run_metadata, timed,
 )
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run ProSeg segmentation (single sample)")
-    parser.add_argument("--config", required=True, help="Path to pipeline_config.yaml")
-    parser.add_argument("--sample-dir", required=True, help="Path to the raw output-XETG... folder")
-    parser.add_argument("--output-dir", required=True, help="Path to write results")
-    parser.add_argument("--sample-id", required=True, help="Sample identifier")
-    args = parser.parse_args()
+    args = runner_parser("Run ProSeg segmentation (single sample)").parse_args()
 
     cfg = load_config(args.config)
     method_cfg = get_method_config(cfg, "proseg")

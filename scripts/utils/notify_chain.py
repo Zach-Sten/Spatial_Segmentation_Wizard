@@ -26,14 +26,6 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 
 
-# All major US carrier SMS gateways (blast all — only the right one delivers)
-SMS_GATEWAYS = [
-    "txt.att.net", "tmomail.net", "vtext.com", "messaging.sprintpcs.com",
-    "msg.fi.google.com", "email.uscc.net", "sms.myboostmobile.com",
-    "vmobl.com", "mmst5.tracfone.com", "mymetropcs.com",
-]
-
-
 def _sendmail(msg) -> bool:
     try:
         proc = subprocess.run(
@@ -107,17 +99,7 @@ def _query_sacct(job_ids: list) -> dict:
         return {}
 
 
-def _send_sms(phone: str, subject: str, body: str):
-    node = os.uname().nodename
-    for gateway in SMS_GATEWAYS:
-        sms = MIMEText(body)
-        sms["Subject"] = subject
-        sms["To"]      = f"{phone}@{gateway}"
-        sms["From"]    = f"slurm@{node}"
-        _sendmail(sms)
-
-
-def send_start(manifest: dict, email: str, phone: str = ""):
+def send_start(manifest: dict, email: str):
     chain_id = manifest["chain_id"]
     jobs     = manifest["jobs"]  # [{method, sample_id, job_id}]
     n        = len(jobs)
@@ -147,10 +129,9 @@ def send_start(manifest: dict, email: str, phone: str = ""):
     else:
         print(f"[NOTIFY] chain start send failed (sendmail not available?)")
 
-    # No SMS on start (avoid noise)
 
 
-def send_finish(manifest: dict, email: str, phone: str = "", attachments: list = None):
+def send_finish(manifest: dict, email: str, attachments: list = None):
     chain_id  = manifest["chain_id"]
     jobs      = manifest["jobs"]
     node      = os.uname().nodename
@@ -197,17 +178,11 @@ def send_finish(manifest: dict, email: str, phone: str = "", attachments: list =
     else:
         print(f"[NOTIFY] chain finish send failed")
 
-    if phone:
-        n_ok  = sum(1 for j in jobs if sacct.get(str(j["job_id"]), {}).get("state") == "COMPLETED")
-        sms   = f"Seg chain {'done' if all_ok else 'FAILED'} ({chain_id}): {n_ok}/{len(jobs)} OK"
-        _send_sms(phone, subject, sms)
-        print(f"[NOTIFY] chain finish SMS → {phone}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Chain-level pipeline notifications")
     parser.add_argument("--email",       required=True)
-    parser.add_argument("--phone",       default="")
     parser.add_argument("--manifest",    required=True, help="Path to chain manifest JSON")
     parser.add_argument("--event",       required=True, choices=["start", "finish"])
     parser.add_argument("--attachments", nargs="*", default=[], help="QC PDF paths (finish only)")
@@ -216,9 +191,9 @@ def main():
     manifest = json.loads(Path(args.manifest).read_text())
 
     if args.event == "start":
-        send_start(manifest, args.email, args.phone)
+        send_start(manifest, args.email)
     else:
-        send_finish(manifest, args.email, args.phone, args.attachments)
+        send_finish(manifest, args.email, args.attachments)
 
 
 if __name__ == "__main__":

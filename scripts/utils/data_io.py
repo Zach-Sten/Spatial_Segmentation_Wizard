@@ -1,16 +1,31 @@
 """
-data_io.py — Shared data loading, saving, and export utilities.
+data_io.py — Shared utilities for the per-method runner scripts.
 
-Provides consistent data handling across all segmentation methods.
+Data loading, saving, export, thread setup, and the common CLI contract.
 """
 
 import os
 import time
+import argparse
 import warnings
 from pathlib import Path
 from functools import wraps
 
 import numpy as np
+
+
+# ── Runner CLI ──
+def runner_parser(description: str) -> argparse.ArgumentParser:
+    """Parser with the four arguments every runner receives from its SLURM script.
+
+    Runners needing extra flags call add_argument() on the result.
+    """
+    p = argparse.ArgumentParser(description=description)
+    p.add_argument("--config",     required=True, help="Path to pipeline config YAML")
+    p.add_argument("--sample-dir", required=True, help="Raw sample directory (input)")
+    p.add_argument("--output-dir", required=True, help="Directory to write results to")
+    p.add_argument("--sample-id",  required=True, help="Sample identifier")
+    return p
 
 
 # ── Timing decorator ──
@@ -122,14 +137,6 @@ def load_xenium_data(raw_data_path: str):
     sdata = xenium(load_path, cells_as_circles=True)
     print(f"[INFO] Loaded: {list(sdata.images.keys())} images, "
           f"{len(sdata.points) if hasattr(sdata, 'points') else '?'} point tables")
-    return sdata
-
-
-@timed("Load spatial data from zarr")
-def load_zarr_data(zarr_path: str):
-    """Load spatial data from a .zarr store."""
-    import spatialdata
-    sdata = spatialdata.read_zarr(zarr_path)
     return sdata
 
 

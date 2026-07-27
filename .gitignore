@@ -10,6 +10,9 @@ reference_data/
 # Notebooks (kept local, not tracked)
 notebooks/
 
+# Assistant working notes — local context, not project documentation
+memory/
+
 # Python
 __pycache__/
 *.pyc

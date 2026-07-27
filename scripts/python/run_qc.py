@@ -94,309 +94,6 @@ print(summary_df)
 # ── PDF report R script path (standalone file — see scripts/r/qc_report.R) ────
 _QC_REPORT_R_SCRIPT = Path(__file__).resolve().parent.parent / "r" / "qc_report.R"
 
-# Legacy inline heredoc kept below as fallback reference only — NOT used.
-CELLSPA_REPORT_R_SCRIPT_UNUSED = """\
-suppressPackageStartupMessages({
-    library(ggplot2)
-    library(dplyr)
-    library(tidyr)
-    library(Matrix)
-    library(patchwork)
-})
-
-args              <- commandArgs(trailingOnly = TRUE)
-comparison        <- read.csv(args[1])
-coords_dir        <- args[2]
-qc_page_pdf       <- args[3]
-sample_id         <- args[4]
-morpho_page_pdf   <- args[5]
-celltype_page_pdf <- if (length(args) >= 6) args[6] else file.path(coords_dir, "_temp_celltype_page.pdf")
-
-# Preserve CSV row order in all plots (xenium first, then reseg methods)
-method_levels <- comparison$method
-comparison$method <- factor(comparison$method, levels = method_levels)
-
-# Load per-cell count data for distribution plots
-all_cells <- list()
-for (method in comparison$method) {
-    counts_path <- file.path(coords_dir, sprintf("counts_%s.mtx", method))
-    if (!file.exists(counts_path)) next
-    counts <- readMM(counts_path)
-    all_cells[[method]] <- data.frame(
-        method       = method,
-        total_counts = colSums(counts),
-        n_genes      = colSums(counts > 0)
-    )
-}
-cells_df <- bind_rows(all_cells)
-cells_df$method <- factor(cells_df$method, levels = method_levels)
-
-# dittoSeq color palette (colorblind-friendly)
-ditto_colors <- c(
-    "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#666666",
-    "#AD7700", "#1C91D4", "#007756", "#D5C711", "#005685", "#A04700", "#B14380", "#4D4D4D",
-    "#FFBE2D", "#80C7EF", "#00F6B3", "#F4EB71", "#06A5FF", "#FF8320", "#D99BBD", "#8C8C8C",
-    "#FFCB57", "#9AD2F2", "#2CFFC6", "#F6EF8E", "#38B7FF", "#FF9B4D", "#E0AFCA", "#A3A3A3",
-    "#8A5F00", "#1674A9", "#005F45", "#AA9F0D", "#00446B", "#803800", "#8D3666", "#3D3D3D"
-)
-fill_scale  <- scale_fill_manual(values  = ditto_colors)
-color_scale <- scale_color_manual(values = ditto_colors)
-
-tt <- theme_minimal(base_size = 9) +
-    theme(plot.title = element_text(size = 9, face = "bold"),
-          legend.position = "none")
-
-# ── Page 1 panels ──
-p_ncells <- ggplot(comparison, aes(x = method, y = n_cells, fill = method)) +
-    geom_col() +
-    geom_text(aes(label = format(n_cells, big.mark = ",")), vjust = -0.3, size = 3) +
-    labs(title = "Cells Detected", x = NULL, y = "# Cells") + fill_scale + tt
-
-p_pct <- NULL
-if ("pct_transcripts_captured" %in% colnames(comparison)) {
-    p_pct <- ggplot(comparison, aes(x = method, y = pct_transcripts_captured, fill = method)) +
-        geom_col() +
-        geom_text(aes(label = sprintf("%.1f%%", pct_transcripts_captured)), vjust = -0.3, size = 3) +
-        labs(title = "% Transcripts Captured", x = NULL, y = "% Captured") +
-        ylim(0, 100) + fill_scale + tt
-}
-
-p_med <- comparison %>%
-    select(method, median_counts, median_genes) %>%
-    pivot_longer(-method, names_to = "metric", values_to = "value") %>%
-    ggplot(aes(x = method, y = value, fill = method)) +
-    geom_col() +
-    facet_wrap(~metric, scales = "free_y") +
-    labs(title = "Median per Cell", x = NULL, y = NULL) +
-    fill_scale + tt + theme(axis.text.x = element_text(angle = 25, hjust = 1))
-
-p_counts <- ggplot(cells_df, aes(x = method, y = total_counts, fill = method)) +
-    geom_violin(trim = TRUE) +
-    geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
-    coord_cartesian(ylim = c(0, quantile(cells_df$total_counts, 0.99, na.rm = TRUE))) +
-    labs(title = "Counts / Cell", x = NULL, y = "Total Counts") +
-    fill_scale + tt + theme(aspect.ratio = 1)
-
-p_genes <- ggplot(cells_df, aes(x = method, y = n_genes, fill = method)) +
-    geom_violin(trim = TRUE) +
-    geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
-    coord_cartesian(ylim = c(0, quantile(cells_df$n_genes, 0.99, na.rm = TRUE))) +
-    labs(title = "Unique Genes / Cell", x = NULL, y = "# Unique Genes") +
-    fill_scale + tt + theme(aspect.ratio = 1)
-
-p_scatter <- ggplot(cells_df, aes(x = total_counts, y = n_genes, color = method)) +
-    geom_point(size = 0.3, alpha = 0.2) +
-    coord_cartesian(
-        xlim = c(0, quantile(cells_df$total_counts, 0.99, na.rm = TRUE)),
-        ylim = c(0, quantile(cells_df$n_genes,      0.99, na.rm = TRUE))
-    ) +
-    labs(title = "Counts vs Unique Genes", x = "Total Counts", y = "# Unique Genes") +
-    theme_minimal(base_size = 9) + theme(aspect.ratio = 1) +
-    color_scale +
-    guides(color = guide_legend(override.aes = list(size = 2, alpha = 1), title = NULL))
-
-# ── Load morpho CSVs (needed for both Page 1 nucleus metric and Page 2 violins) ──
-morpho_metrics <- c("cell_area", "elongation", "circularity", "compactness",
-                    "eccentricity", "solidity", "convexity", "density", "nuclear_ratio")
-
-all_morpho <- list()
-for (method in levels(comparison$method)) {
-    morpho_path <- file.path(coords_dir, sprintf("morpho_%s.csv", method))
-    if (!file.exists(morpho_path)) next
-    df <- read.csv(morpho_path)
-    df$method <- as.character(method)
-    all_morpho[[method]] <- df
-}
-
-# Compute % cells without a matched nucleus and add to comparison table
-if (length(all_morpho) > 0 && "nuclear_ratio" %in% colnames(bind_rows(all_morpho))) {
-    nuc_stats <- bind_rows(lapply(all_morpho, function(df) {
-        data.frame(
-            method           = df$method[1],
-            pct_no_nucleus   = if ("nuclear_ratio" %in% colnames(df))
-                                   100 * sum(is.na(df$nuclear_ratio)) / nrow(df)
-                               else NA_real_
-        )
-    }))
-    comparison <- left_join(comparison, nuc_stats, by = "method")
-}
-
-p_no_nucleus <- NULL
-if ("pct_no_nucleus" %in% colnames(comparison) && any(!is.na(comparison$pct_no_nucleus))) {
-    p_no_nucleus <- ggplot(comparison, aes(x = method, y = pct_no_nucleus, fill = method)) +
-        geom_col() +
-        geom_text(aes(label = sprintf("%.1f%%", pct_no_nucleus)), vjust = -0.3, size = 3) +
-        labs(title = "% Cells Without Nucleus", x = NULL, y = "% Cells") +
-        ylim(0, 100) + fill_scale + tt
-}
-
-top_row <- if (!is.null(p_pct) && !is.null(p_no_nucleus)) {
-    p_ncells | p_pct | p_no_nucleus | p_med
-} else if (!is.null(p_pct)) {
-    p_ncells | p_pct | p_med
-} else if (!is.null(p_no_nucleus)) {
-    p_ncells | p_no_nucleus | p_med
-} else {
-    p_ncells | p_med
-}
-bottom_row <- p_counts | p_genes | p_scatter
-
-# ── Cell type annotation CSVs (optional — written by classifier step) ──
-all_annot <- list()
-for (method in as.character(method_levels)) {
-    annot_path <- file.path(coords_dir, sprintf("annotations_%s.csv", method))
-    if (!file.exists(annot_path)) next
-    df <- read.csv(annot_path, stringsAsFactors = FALSE)
-    if (!"pred_cell_type" %in% colnames(df)) next
-    df$cell_id <- as.character(df$cell_id)
-    df$method <- as.character(method)
-    all_annot[[method]] <- df
-}
-has_annotations <- length(all_annot) > 0
-
-bottom_annot <- plot_spacer()
-if (has_annotations) {
-    annot_df <- bind_rows(all_annot)
-    annot_df$method <- factor(annot_df$method, levels = method_levels)
-    ct_order <- annot_df %>%
-        group_by(pred_cell_type) %>%
-        summarise(med = median(pred_confidence, na.rm = TRUE), .groups = "drop") %>%
-        arrange(desc(med)) %>%
-        pull(pred_cell_type)
-    annot_df$pred_cell_type <- factor(annot_df$pred_cell_type, levels = ct_order)
-
-    bottom_annot <- ggplot(annot_df, aes(x = pred_cell_type,
-                                          y = pred_confidence,
-                                          fill = pred_cell_type)) +
-        geom_boxplot(outlier.shape = NA, width = 0.6, linewidth = 0.3) +
-        facet_wrap(~method, ncol = length(levels(annot_df$method))) +
-        coord_cartesian(ylim = c(0, 1)) +
-        labs(title = "Prediction Confidence by Cell Type", x = NULL, y = "Confidence") +
-        scale_fill_manual(values = ditto_colors) +
-        theme_minimal(base_size = 8) +
-        theme(axis.text.x   = element_text(angle = 40, hjust = 1),
-              legend.position = "none",
-              strip.text    = element_text(size = 8, face = "bold"),
-              plot.title    = element_text(size = 9, face = "bold"))
-}
-
-page1 <- (plot_spacer() / top_row / bottom_row / bottom_annot) +
-    plot_layout(heights = c(0.05, 1, 1, 0.4)) +
-    plot_annotation(
-        title = sprintf("Segmentation QC Report — %s", sample_id),
-        theme = theme(plot.title = element_text(size = 11, face = "bold"))
-    )
-
-p_morpho_plots <- NULL
-if (length(all_morpho) > 0) {
-    morpho_df <- bind_rows(all_morpho)
-    morpho_df$method <- factor(morpho_df$method, levels = method_levels)
-    available_morpho <- intersect(morpho_metrics, colnames(morpho_df))
-
-    if (length(available_morpho) > 0) {
-        morpho_long <- morpho_df %>%
-            select(method, all_of(available_morpho)) %>%
-            pivot_longer(-method, names_to = "metric", values_to = "value") %>%
-            filter(is.finite(value))
-
-        p_morpho_plots <- lapply(available_morpho, function(m) {
-            sub_df <- morpho_long[morpho_long$metric == m, ]
-            q99 <- quantile(sub_df$value, 0.99, na.rm = TRUE)
-            ggplot(sub_df, aes(x = method, y = value, fill = method)) +
-                geom_violin(trim = TRUE) +
-                geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
-                coord_cartesian(ylim = c(0, q99)) +
-                labs(title = m, x = NULL, y = NULL) +
-                fill_scale + tt +
-                theme(axis.text.x = element_text(angle = 25, hjust = 1),
-                      aspect.ratio = 1.0)
-        })
-    }
-}
-
-# Write each dynamic page as its own file so Python can interleave guide pages.
-pdf(qc_page_pdf, width = 8.5, height = 11)
-    print(page1)
-dev.off()
-cat(sprintf("[INFO] QC page saved: %s\\n", qc_page_pdf))
-
-if (!is.null(p_morpho_plots) && length(p_morpho_plots) > 0) {
-    morpho_page <- (plot_spacer() / wrap_plots(p_morpho_plots, ncol = 3) / plot_spacer()) +
-        plot_layout(heights = c(0.05, 1, 0.05)) +
-        plot_annotation(
-            title = "Morphological Metrics",
-            subtitle = "Per-cell distributions computed from segmentation boundary geometry",
-            theme = theme(plot.title = element_text(size = 11, face = "bold"))
-        )
-    pdf(morpho_page_pdf, width = 8.5, height = 11)
-        print(morpho_page)
-    dev.off()
-    cat(sprintf("[INFO] Morpho page saved: %s\\n", morpho_page_pdf))
-}
-
-# ── Cell type page (only if annotation CSVs were loaded) ──
-if (has_annotations) {
-    # Cell type composition: stacked % and absolute count side by side
-    comp_df <- annot_df %>%
-        group_by(method, pred_cell_type) %>%
-        summarise(n = n(), .groups = "drop") %>%
-        group_by(method) %>%
-        mutate(pct = 100 * n / sum(n)) %>%
-        ungroup()
-
-    p_comp_pct <- ggplot(comp_df, aes(x = method, y = pct, fill = pred_cell_type)) +
-        geom_col(position = "stack", width = 0.65) +
-        scale_fill_manual(values = ditto_colors) +
-        labs(title = "Cell Type Composition (%)", x = NULL, y = "% Cells", fill = "Cell Type") +
-        theme_minimal(base_size = 9) +
-        theme(plot.title     = element_text(size = 9, face = "bold"),
-              legend.text    = element_text(size = 7),
-              legend.key.size = unit(0.35, "cm"),
-              axis.text.x    = element_text(angle = 20, hjust = 1))
-
-    p_comp_n <- ggplot(comp_df, aes(x = pred_cell_type, y = n, fill = method)) +
-        geom_col(position = "dodge", width = 0.7) +
-        scale_fill_manual(values = ditto_colors) +
-        labs(title = "Cell Count by Type", x = NULL, y = "# Cells", fill = "Method") +
-        theme_minimal(base_size = 9) +
-        theme(plot.title     = element_text(size = 9, face = "bold"),
-              axis.text.x    = element_text(angle = 40, hjust = 1),
-              legend.text    = element_text(size = 7),
-              legend.key.size = unit(0.35, "cm"))
-
-    # Per-cell-type confidence violin by method
-    p_conf_violin <- ggplot(annot_df,
-                            aes(x = method, y = pred_confidence, fill = method)) +
-        geom_violin(trim = TRUE, scale = "width") +
-        geom_boxplot(width = 0.12, fill = "white", outlier.shape = NA) +
-        coord_cartesian(ylim = c(0, 1)) +
-        facet_wrap(~pred_cell_type, ncol = 4) +
-        labs(title = "Prediction Confidence per Cell Type", x = NULL, y = "Confidence") +
-        scale_fill_manual(values = ditto_colors) +
-        theme_minimal(base_size = 8) +
-        theme(axis.text.x    = element_text(angle = 25, hjust = 1),
-              legend.position = "none",
-              strip.text      = element_text(size = 7, face = "bold"),
-              plot.title      = element_text(size = 9, face = "bold"))
-
-    top_comp <- (p_comp_pct | p_comp_n) + plot_layout(widths = c(0.38, 0.62))
-
-    celltype_page <- (plot_spacer() / top_comp / p_conf_violin / plot_spacer()) +
-        plot_layout(heights = c(0.05, 1, 2, 0.05)) +
-        plot_annotation(
-            title    = "Cell Type Annotations",
-            subtitle = "XGBoost rank-gene classifier predictions",
-            theme    = theme(plot.title    = element_text(size = 11, face = "bold"),
-                             plot.subtitle = element_text(size = 9, color = "gray40"))
-        )
-
-    pdf(celltype_page_pdf, width = 8.5, height = 11)
-        print(celltype_page)
-    dev.off()
-    cat(sprintf("[INFO] Cell type page saved: %s\\n", celltype_page_pdf))
-}
-"""
-
 
 def count_total_transcripts(sample_dir: Path) -> Optional[int]:
     """Count total transcripts in the raw Xenium sample directory."""
@@ -570,9 +267,13 @@ def compute_morphological_metrics(gdf, adata, nucleus_gdf=None) -> Optional[pd.D
             print(f"[WARN] Nuclear area spatial join failed: {e}")
 
     rows = []
+    n_empty = 0
+    n_failed = 0
+    first_error = None
     for cell_id, row in gdf.iterrows():
         geom = row.geometry
         if geom is None or geom.is_empty:
+            n_empty += 1
             continue
         try:
             area = geom.area
@@ -621,8 +322,22 @@ def compute_morphological_metrics(gdf, adata, nucleus_gdf=None) -> Optional[pd.D
                     rec["nuclear_ratio"] = nuc_area / area if area > 0 else float("nan")
 
             rows.append(rec)
-        except Exception:
+        except Exception as e:
+            n_failed += 1
+            if first_error is None:
+                first_error = e
             continue
+
+    # Dropped cells skew every downstream morphological statistic, so account for
+    # them out loud rather than silently reporting on whatever survived.
+    n_skipped = n_empty + n_failed
+    if n_skipped:
+        pct = 100.0 * n_skipped / len(gdf) if len(gdf) else 0.0
+        level = "WARN" if pct >= 1.0 else "INFO"
+        print(f"[{level}] compute_morphological_metrics: skipped {n_skipped} / {len(gdf)} "
+              f"cells ({pct:.1f}%) — {n_empty} empty geometry, {n_failed} raised")
+        if first_error is not None:
+            print(f"[{level}] first failure: {type(first_error).__name__}: {first_error}")
 
     if not rows:
         print("[WARN] compute_morphological_metrics: no valid geometries processed")

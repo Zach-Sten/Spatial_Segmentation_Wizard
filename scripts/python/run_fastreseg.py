@@ -15,7 +15,6 @@ Called by the generated SLURM script:
 import os
 import sys
 import time
-import argparse
 import subprocess
 from pathlib import Path
 import numpy as np
@@ -24,7 +23,7 @@ import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.config_loader import load_config, get_method_config
-from utils.data_io import configure_threads, save_run_metadata, timed
+from utils.data_io import runner_parser, configure_threads, save_run_metadata, timed
 
 _FASTRESEG_R_SCRIPT = Path(__file__).resolve().parent.parent / "r" / "fastreseg.R"
 
@@ -372,12 +371,7 @@ def export_to_explorer(sample_dir: Path, output_dir: Path, sample_id: str,
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Run FastReseg (single sample)")
-    parser.add_argument("--config",   required=True)
-    parser.add_argument("--sample-dir", required=True,
-                        help="Raw Xenium sample directory (for transcripts.parquet)")
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--sample-id",  required=True)
+    parser = runner_parser("Run FastReseg (single sample)")
     parser.add_argument("--source-dir", required=True,
                         help="Source segmentation results directory (h5ad)")
     parser.add_argument("--reference-path", default=None)
