@@ -191,25 +191,36 @@ print('CPSAM model cached OK')
   $ENV_PIP install tensorflow-cpu==2.16.2
   $ENV_PIP install stardist==0.9.2
 
-  # Pre-cache StarDist pretrained models during build so HPC compute nodes
-  # (no outbound internet) can load them at runtime.
-  # IMPORTANT: csbdeep (stardist's backend) uses CSBDEEP_CACHE_DIR, NOT KERAS_HOME.
-  # If CSBDEEP_CACHE_DIR is unset it falls back to ~/.keras (nonexistent in container).
-  mkdir -p /opt/stardist_models
-  CSBDEEP_CACHE_DIR=/opt/stardist_models $ENV_PYTHON -c "
-import os, traceback
-os.environ['CSBDEEP_CACHE_DIR'] = '/opt/stardist_models'
-from stardist.models import StarDist2D
-try:
-    print('Pre-caching StarDist 2D_versatile_fluo...')
-    StarDist2D.from_pretrained('2D_versatile_fluo')
-    print('Pre-caching StarDist 2D_versatile_he...')
-    StarDist2D.from_pretrained('2D_versatile_he')
-    print('StarDist models cached OK')
-except Exception as e:
-    traceback.print_exc()
-    raise
-"
+  # Pre-stage StarDist pretrained models WITHOUT importing tensorflow.
+  # TF pip wheels use CPU instructions (AVX2+) that older build nodes lack —
+  # importing TF during %post dies with "Illegal instruction" (exit 132).
+  # Plain download instead; run_stardist.py stages these into ~/.keras at
+  # runtime (_stage_model_for_keras), and the wizard's seg_models_path can be
+  # seeded by copying /opt/stardist_models out of the image.
+  SD_DIR=/opt/stardist_models/models/StarDist2D
+  mkdir -p $SD_DIR
+  for SD_KEY in 2D_versatile_fluo 2D_versatile_he; do
+    wget -q https://github.com/stardist/stardist-models/releases/download/v0.1/python_${SD_KEY}.zip \
+      -O $SD_DIR/${SD_KEY}.zip
+  done
+  $ENV_PYTHON - <<'PYEOF'
+import zipfile, pathlib, shutil
+base = pathlib.Path("/opt/stardist_models/models/StarDist2D")
+for key in ["2D_versatile_fluo", "2D_versatile_he"]:
+    dest = base / key
+    dest.mkdir(exist_ok=True)
+    with zipfile.ZipFile(base / f"{key}.zip") as zf:
+        zf.extractall(dest)
+    # Flatten if the zip wraps everything in a single top-level folder
+    if not (dest / "config.json").exists():
+        subdirs = [p for p in dest.iterdir() if p.is_dir()]
+        if len(subdirs) == 1 and (subdirs[0] / "config.json").exists():
+            for item in list(subdirs[0].iterdir()):
+                shutil.move(str(item), str(dest))
+            subdirs[0].rmdir()
+    assert (dest / "config.json").exists(), f"StarDist model layout wrong: {dest}"
+    print(f"StarDist model staged: {dest}")
+PYEOF
 
   # Re-pin numpy: tensorflow may have bumped it
   $ENV_PIP install numpy==1.26.4 --no-deps --force-reinstall
@@ -420,19 +431,44 @@ PYEOF
   # internet, so the weights must be baked in here. deepcell caches under
   # ~/.deepcell — redirect HOME so the cache lands at a fixed image path.
   if [ -f /deepcell_token.txt ]; then
-    export DEEPCELL_ACCESS_TOKEN="$(cat /deepcell_token.txt)"
-    mkdir -p /opt/deepcell_home
-    HOME=/opt/deepcell_home $MESMER_PYTHON -c "
-from deepcell.applications import Mesmer
-print('Pre-caching Mesmer MultiplexSegmentation weights...')
-Mesmer()
-print('Mesmer weights cached OK')
-"
+    mkdir -p /opt/deepcell_home/.deepcell/models
+    # Download via the users.deepcell.org API with stdlib only — importing
+    # deepcell would import tensorflow, which SIGILLs on old build-node CPUs.
+    # Mirrors deepcell.utils._auth.fetch_data (asset key + md5 from
+    # deepcell/applications/mesmer.py).
+    DEEPCELL_ACCESS_TOKEN="$(cat /deepcell_token.txt)" $ENV_PYTHON - <<'PYEOF'
+import os, json, hashlib, tarfile, pathlib, urllib.request, urllib.parse
+token = os.environ["DEEPCELL_ACCESS_TOKEN"].strip()
+asset = "models/MultiplexSegmentation-9.tar.gz"
+want_md5 = "a1dfbce2594f927b9112f23a0a1739e0"
+models = pathlib.Path("/opt/deepcell_home/.deepcell/models")
+req = urllib.request.Request(
+    "https://users.deepcell.org/api/getData/",
+    data=urllib.parse.urlencode({"s3_key": asset}).encode(),
+    headers={"X-Api-Key": token},
+)
+with urllib.request.urlopen(req) as r:
+    url = json.load(r)["url"]
+tar_path = models / "MultiplexSegmentation-9.tar.gz"
+print("Downloading Mesmer MultiplexSegmentation weights...")
+dl = urllib.request.Request(url, headers={"user-agent": "Wget/1.20 (linux-gnu)"})
+with urllib.request.urlopen(dl) as r, open(tar_path, "wb") as f:
+    while True:
+        chunk = r.read(1 << 20)
+        if not chunk:
+            break
+        f.write(chunk)
+md5 = hashlib.md5(tar_path.read_bytes()).hexdigest()
+assert md5 == want_md5, f"md5 mismatch: {md5} != {want_md5}"
+with tarfile.open(tar_path) as tf:
+    tf.extractall(models)
+assert (models / "MultiplexSegmentation").exists(), "extracted model dir missing"
+print("Mesmer weights cached OK")
+PYEOF
     chmod -R a+rX /opt/deepcell_home
     echo "Mesmer cache contents:"
     find /opt/deepcell_home -maxdepth 4 | head -20
     rm /deepcell_token.txt
-    unset DEEPCELL_ACCESS_TOKEN
   else
     echo "WARNING: deepcell_token.txt not provided — Mesmer weights NOT baked in."
     echo "         Mesmer will fail on offline compute nodes until rebuilt with a token."
@@ -459,7 +495,7 @@ print('Mesmer weights cached OK')
   echo "export PATH=/opt/baysor/bin:\${PATH}" >> $SINGULARITY_ENVIRONMENT
   echo "export JULIA_DEPOT_PATH=\${HOME}/.julia:/root/.julia" >> $SINGULARITY_ENVIRONMENT
   echo "export CELLPOSE_LOCAL_MODELS_PATH=/opt/cellpose_models" >> $SINGULARITY_ENVIRONMENT
-  echo "export CSBDEEP_CACHE_DIR=/opt/stardist_models" >> $SINGULARITY_ENVIRONMENT
+  echo "export STARDIST_MODELS_DIR=/opt/stardist_models" >> $SINGULARITY_ENVIRONMENT
   # Per-env interpreters — SLURM scripts target the right env per method via
   # these instead of hardcoding paths. Main env stays the default python.
   echo "export MAIN_ENV_PYTHON=/opt/miniforge3/envs/spatial_segmentation_env/bin/python" >> $SINGULARITY_ENVIRONMENT
@@ -500,13 +536,10 @@ print('Mesmer weights cached OK')
   $ENV_PYTHON -c "import spatialdata; print(f'spatialdata: {spatialdata.__version__}')" || FAILURES="$FAILURES spatialdata"
   $ENV_PYTHON -c "import bidcell; print('bidcell:     OK')" || echo "WARN: bidcell missing (coming soon)"
   $ENV_PYTHON -c "import Bering; print('Bering:      OK')" || echo "WARN: Bering missing (coming soon)"
-  $ENV_PYTHON -c "
-import os, stardist
-os.environ['CSBDEEP_CACHE_DIR'] = '/opt/stardist_models'
-from stardist.models import StarDist2D
-m = StarDist2D.from_pretrained('2D_versatile_fluo')
-print(f'stardist:    {stardist.__version__} (2D_versatile_fluo cached OK)')
-" || FAILURES="$FAILURES stardist/model"
+  [ -f /opt/stardist_models/models/StarDist2D/2D_versatile_fluo/config.json ] || FAILURES="$FAILURES stardist-models"
+  [ -f /opt/stardist_models/models/StarDist2D/2D_versatile_he/config.json ] || FAILURES="$FAILURES stardist-models-he"
+  $ENV_PYTHON -c "import stardist; print(f'stardist:    {stardist.__version__}')" \
+    || echo "WARN: stardist/TF import failed — expected on old build-node CPUs (no AVX2); verify on a compute node"
   $ENV_PYTHON -c "import comseg; print('comseg:      OK')" || FAILURES="$FAILURES comseg"
   $ENV_PYTHON -c "import numpy; print(f'numpy:       {numpy.__version__}')" || FAILURES="$FAILURES numpy"
   $ENV_PYTHON -c "import xgboost; print(f'xgboost:     {xgboost.__version__}')" || FAILURES="$FAILURES xgboost"
@@ -537,15 +570,10 @@ print(f'stardist:    {stardist.__version__} (2D_versatile_fluo cached OK)')
   ENV_PYTHON=/opt/miniforge3/envs/spatial_segmentation_env/bin/python
   SEGGER_PYTHON=/opt/miniforge3/envs/segger_env/bin/python
   MESMER_PYTHON=/opt/miniforge3/envs/mesmer_env/bin/python
-  $ENV_PYTHON -c "import sopa; import scanpy; import squidpy; import torch; import xgboost; import sklearn; import stardist; import comseg; print('Python imports OK')"
+  $ENV_PYTHON -c "import sopa; import scanpy; import squidpy; import torch; import xgboost; import sklearn; import comseg; print('Python imports OK')"
   $ENV_PYTHON -c "import cellpose; from cellpose import models; models.CellposeModel(pretrained_model='cpsam', gpu=False); print('cellpose + CPSAM model OK')"
-  $ENV_PYTHON -c "
-import os
-os.environ['CSBDEEP_CACHE_DIR'] = '/opt/stardist_models'
-from stardist.models import StarDist2D
-StarDist2D.from_pretrained('2D_versatile_fluo')
-print('stardist model OK')
-"
+  [ -f /opt/stardist_models/models/StarDist2D/2D_versatile_fluo/config.json ] && echo "stardist models staged OK"
+  $ENV_PYTHON -c "import stardist; print('stardist import OK')" || echo "NOTE: stardist/TF import failed — old build-node CPU; verify on a compute node"
   $ENV_PYTHON -c "import Bering; print('Bering OK')" || echo "NOTE: Bering not installed (coming soon)"
   $SEGGER_PYTHON -c "import segger; print('segger OK (segger_env)')" || echo "NOTE: segger not installed (coming soon)"
   $MESMER_PYTHON -c "import deepcell; print('deepcell OK (mesmer_env)')" || echo "NOTE: deepcell not installed (Mesmer coming soon)"
