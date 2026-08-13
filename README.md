@@ -63,6 +63,7 @@ Given a reference dataset, the classifier also labels cell types and reports how
 | **BIDCell** | Deep learning (PyTorch) | Coming soon |
 | **Bering** | Graph-based learning for transcript localization | Coming soon |
 | **Segger** | Heterogeneous graph neural network for link prediction | Coming soon |
+| **Mesmer** | Deep learning (PyTorch) | Coming soon |
 
 Methods marked *coming soon* appear in the wizard but cannot be selected yet — they are packaged in the container but not validated end to end.
 
