@@ -98,10 +98,14 @@ Results are written into `{method}_reseg/` folders alongside your raw data. Raw 
 | `annotations.csv` | Cell types assigned from the reference dataset |
 | `confidence.csv` | Per-cell confidence in those annotations |
 
-QC output per slide:
+QC output per slide — each CSV covers all methods, distinguished by a `method` column:
 - `qc_report.pdf` — comparative report, emailed when the run finishes
-- `morpho_{method}.csv` — per-cell morphological metrics
-- `cellspa_{method}.csv` — count-based QC summary
+- `cellspa.csv` — count-based QC summary (one row per method)
+- `morpho.csv` — per-cell morphological metrics
+- `annotations.csv` — per-cell predicted cell types and confidence
+- `coords.csv` / `meta.csv` — per-cell spatial coordinates and numeric metadata
+- `segger_mecr.csv`, `segger_contamination.csv`, `segger_sensitivity.csv`, `segger_mecr_area.csv` — segmentation-quality metrics (require the classifier step)
+- `counts_{method}.mtx` — sparse count matrices, per method (MatrixMarket format has no columns for a method label); column order matches that method's rows in `coords.csv`/`meta.csv`
 
 ## Requirements
 

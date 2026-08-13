@@ -348,10 +348,40 @@ def compute_morphological_metrics(gdf, adata, nucleus_gdf=None) -> Optional[pd.D
     return df
 
 
+def _accumulate_family(acc: dict, family: str, df: pd.DataFrame, method: str):
+    """Tag df with the method name and queue it for the merged <family>.csv."""
+    df = df.copy()
+    df["method"] = method
+    acc.setdefault(family, []).append(df)
+
+
+def write_merged_families(acc: dict, qc_dir: Path):
+    """Write one <family>.csv per accumulated family — all methods stacked,
+    distinguished by the `method` column."""
+    for family, dfs in acc.items():
+        merged = pd.concat(dfs, ignore_index=True, sort=False)
+        out = qc_dir / f"{family}.csv"
+        merged.to_csv(out, index=False)
+        print(f"[INFO] {out.name}: {len(merged)} rows, {merged['method'].nunique()} methods")
+
+
+def _clean_stale_qc_files(qc_dir: Path):
+    """Remove per-method QC files written by earlier pipeline versions, so a
+    rerun into an existing qc dir doesn't mix old per-method and new merged
+    outputs. counts_<method>.mtx is still current and cellseg_*.csv predates
+    this pipeline, so both are left alone."""
+    for pattern in ("annotations_*.csv", "cellspa_*.csv", "coords_*.csv",
+                    "meta_*.csv", "morpho_*.csv", "run_cellspa_*.R"):
+        for stale in qc_dir.glob(pattern):
+            stale.unlink()
+
+
 def export_for_r(adata, method: str, qc_dir: Path) -> tuple:
     """Export counts, coords, and obs metadata for the CellSPA R script.
 
-    Returns (counts_path, coords_path, meta_path).
+    Returns (counts_path, coords_path, meta_path, coords_df, meta_df).
+    coords_df / meta_df carry an explicit cell_id column for the merged
+    per-family CSVs; the on-disk per-method files are temporary R inputs.
     """
     from scipy.io import mmwrite
     import scipy.sparse as sp
@@ -371,8 +401,11 @@ def export_for_r(adata, method: str, qc_dir: Path) -> tuple:
         xy_cols = [c for c in adata.obs.columns if c in ("x", "y", "spatial_x", "spatial_y")]
         coords = adata.obs[xy_cols[:2]].values if len(xy_cols) >= 2 else None
 
+    coords_df = None
     if coords is not None:
-        pd.DataFrame(coords, columns=["x", "y"]).to_csv(coords_path, index=False)
+        coords_df = pd.DataFrame({"cell_id": adata.obs_names.astype(str),
+                                  "x": coords[:, 0], "y": coords[:, 1]})
+        coords_df.to_csv(coords_path, index=False)
     else:
         print(f"[WARN] No spatial coordinates found for {method} — spatial metrics will be skipped")
         coords_path = None
@@ -386,18 +419,33 @@ def export_for_r(adata, method: str, qc_dir: Path) -> tuple:
     else:
         numeric_obs = numeric_obs.copy()
         numeric_obs.index = adata.obs_names
-    numeric_obs.to_csv(meta_path, index=True)
+    numeric_obs.to_csv(meta_path, index=True, index_label="cell_id")
 
-    return counts_path, coords_path, meta_path
+    meta_df = numeric_obs.rename_axis("cell_id").reset_index()
+    meta_df["cell_id"] = meta_df["cell_id"].astype(str)
+
+    return counts_path, coords_path, meta_path, coords_df, meta_df
 
 
-def run_cellspa(adata, method: str, qc_dir: Path) -> bool:
-    """Export data, write and run the CellSPA R script for one method. Returns True on success."""
-    counts_path, coords_path, meta_path = export_for_r(adata, method, qc_dir)
+def run_cellspa(adata, method: str, qc_dir: Path, acc: Optional[dict] = None) -> bool:
+    """Export data, write and run the CellSPA R script for one method. Returns True on success.
+
+    The per-method coords/meta CSVs are temporary R inputs: their contents go
+    into `acc` for the merged coords.csv / meta.csv and the files are removed
+    afterwards. counts_<method>.mtx stays per method — MatrixMarket format has
+    no columns to carry a method label; its column order matches the cell_id
+    order of that method's rows in coords.csv / meta.csv.
+    """
+    counts_path, coords_path, meta_path, coords_df, meta_df = export_for_r(adata, method, qc_dir)
+    if acc is not None:
+        if coords_df is not None:
+            _accumulate_family(acc, "coords", coords_df, method)
+        _accumulate_family(acc, "meta", meta_df, method)
     if coords_path is None:
+        meta_path.unlink(missing_ok=True)
         return False
 
-    r_script = qc_dir / f"run_cellspa_{method}.R"
+    r_script = qc_dir / "run_cellspa.R"
     r_script.write_text(CELLSPA_R_SCRIPT)
 
     cmd = [
@@ -407,10 +455,12 @@ def run_cellspa(adata, method: str, qc_dir: Path) -> bool:
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
-    if result.returncode != 0:
+    ok = result.returncode == 0
+    if not ok:
         print(f"[ERROR] CellSPA R failed for {method}:\n{result.stderr}")
-        return False
-    return True
+    coords_path.unlink(missing_ok=True)
+    meta_path.unlink(missing_ok=True)
+    return ok
 
 
 def _stitch_pdfs(pages: list, output: Path):
@@ -594,6 +644,7 @@ def _run_multi_sample_qc(args):
     base_dir = Path(output_base) / slide_dir.name if output_base else slide_dir
     qc_dir = base_dir / "qc" / "combined"
     qc_dir.mkdir(parents=True, exist_ok=True)
+    _clean_stale_qc_files(qc_dir)
 
     configure_threads()
     t_start = time.time()
@@ -668,8 +719,10 @@ def _run_multi_sample_qc(args):
         save_run_metadata(qc_dir, "qc", method_cfg, time.time() - t_start)
         return
 
+    # Merged per-family CSVs — one <family>.csv with a `method` column
+    merged_families: dict = {}
+
     # --- Annotation CSVs: concatenate from each sample (with sample-prefixed cell IDs) ---
-    import shutil as _shutil
     for method, (adata, output_dir) in method_data.items():
         all_annot_rows = []
         for sid in sample_ids:
@@ -698,7 +751,8 @@ def _run_multi_sample_qc(args):
 
         if all_annot_rows:
             merged_annot = pd.concat(all_annot_rows)
-            merged_annot.to_csv(qc_dir / f"annotations_{method}.csv")
+            _accumulate_family(merged_families, "annotations",
+                               merged_annot.rename_axis("cell_id").reset_index(), method)
             print(f"[INFO] Annotations merged for {method}: {len(merged_annot)} cells")
             # Merge into adata.obs
             adata.obs.index = adata.obs.index.astype(str)
@@ -730,7 +784,7 @@ def _run_multi_sample_qc(args):
 
         @timed(f"CellSPA metrics: {method}")
         def _cellspa():
-            return run_cellspa(adata, method, qc_dir)
+            return run_cellspa(adata, method, qc_dir, acc=merged_families)
         success = _cellspa()
 
         if success:
@@ -741,8 +795,8 @@ def _run_multi_sample_qc(args):
                     X = adata.X
                     assigned = int(X.sum()) if sp.issparse(X) else int(np.sum(X))
                     df["pct_transcripts_captured"] = round(100.0 * assigned / total_transcripts, 2)
-                    df.to_csv(csv, index=False)
                 cellspa_results.append(df)
+                csv.unlink()
 
         @timed(f"Morphological metrics: {method}")
         def _morpho(method=method):
@@ -763,9 +817,8 @@ def _run_multi_sample_qc(args):
                     all_morpho_dfs.append(mdf)
             if all_morpho_dfs:
                 combined_morpho = pd.concat(all_morpho_dfs, ignore_index=True)
-                morpho_path = qc_dir / f"morpho_{method}.csv"
-                combined_morpho.to_csv(morpho_path, index=False)
-                print(f"[INFO] Morpho saved: {morpho_path.name} ({len(combined_morpho)} cells)")
+                _accumulate_family(merged_families, "morpho", combined_morpho, method)
+                print(f"[INFO] Morpho computed for {method} ({len(combined_morpho)} cells)")
         _morpho()
 
         generate_qc_plots(adata, method, qc_dir)
@@ -780,13 +833,17 @@ def _run_multi_sample_qc(args):
             except Exception as e:
                 print(f"[WARN] Could not save concat h5ad for {method}: {e}")
 
+    # One CSV per family with a `method` column — must land before segger,
+    # which reads morpho.csv back for cell areas / centroids.
+    write_merged_families(merged_families, qc_dir)
+
     print("\n── Segger Metrics ──")
     compute_segger_metrics(method_data, qc_dir, base_dir,
                            reference_path=args.reference_path or "")
 
     if cellspa_results:
         comparison = pd.concat(cellspa_results, ignore_index=True)
-        comparison_csv = qc_dir / "cellspa_comparison.csv"
+        comparison_csv = qc_dir / "cellspa.csv"
         comparison.to_csv(comparison_csv, index=False)
         print(f"\n── CellSPA Comparison ──")
         print(comparison.to_string(index=False))
@@ -900,6 +957,9 @@ def compute_segger_metrics(method_data: dict, qc_dir: Path, base_dir: Path,
         gene_pairs = pickle.load(f)
     print(f"[INFO] Segger markers loaded: {len(markers)} cell types, {len(gene_pairs)} gene pairs")
 
+    # One merged CSV per segger metric, all methods stacked with a `method` column
+    mecr_all, contam_all, sens_all, qmecr_all = [], [], [], []
+
     for method, (adata, output_dir) in method_data.items():
         if "pred_cell_type" not in adata.obs.columns:
             continue
@@ -921,12 +981,14 @@ def compute_segger_metrics(method_data: dict, qc_dir: Path, base_dir: Path,
             import scipy.sparse as _sp
             adata.layers["raw"] = adata.X.copy() if not _sp.issparse(adata.X) else adata.X
 
-        # Merge cell_area and centroids from morpho CSV if available
-        morpho_csv = qc_dir / f"morpho_{method}.csv"
+        # Merge cell_area and centroids from the merged morpho CSV if available
+        morpho_csv = qc_dir / "morpho.csv"
         if morpho_csv.exists():
             try:
                 morpho_df = pd.read_csv(morpho_csv)
-                if "cell_id" in morpho_df.columns:
+                if "method" in morpho_df.columns:
+                    morpho_df = morpho_df[morpho_df["method"] == method]
+                if "cell_id" in morpho_df.columns and len(morpho_df):
                     morpho_df = morpho_df.set_index("cell_id")
                     morpho_df.index = morpho_df.index.astype(str)  # match adata.obs_names string type
                     for col in ["cell_area", "cell_centroid_x", "cell_centroid_y"]:
@@ -970,7 +1032,7 @@ def compute_segger_metrics(method_data: dict, qc_dir: Path, base_dir: Path,
                 for (g1, g2), v in mecr_dict.items()
             ])
             if len(mecr_df) > 0:
-                mecr_df.to_csv(qc_dir / f"segger_mecr_{method}.csv", index=False)
+                mecr_all.append(mecr_df)
                 print(f"[INFO]   MECR: mean={mecr_df['mecr'].mean():.4f}")
         except Exception as e:
             print(f"[WARN]   MECR failed for {method}: {e}")
@@ -979,8 +1041,16 @@ def compute_segger_metrics(method_data: dict, qc_dir: Path, base_dir: Path,
         try:
             contam_df = calculate_contamination(adata, markers, celltype_column="celltype_major")
             if len(contam_df) > 0:
-                contam_df.to_csv(qc_dir / f"segger_contamination_{method}.csv")
-                print(f"[INFO]   Contamination saved")
+                # Square source × target matrix — reshape long so all methods
+                # can share one CSV.
+                contam_long = (
+                    contam_df.rename_axis("source_cell_type").reset_index()
+                    .melt(id_vars="source_cell_type",
+                          var_name="target_cell_type", value_name="contamination")
+                )
+                contam_long["method"] = method
+                contam_all.append(contam_long)
+                print(f"[INFO]   Contamination computed")
         except Exception as e:
             print(f"[WARN]   Contamination failed for {method}: {e}")
 
@@ -990,8 +1060,8 @@ def compute_segger_metrics(method_data: dict, qc_dir: Path, base_dir: Path,
             rows = [{"cell_type": ct, "sensitivity": v, "method": method}
                     for ct, vals in sens.items() for v in vals]
             if rows:
-                pd.DataFrame(rows).to_csv(qc_dir / f"segger_sensitivity_{method}.csv", index=False)
-                print(f"[INFO]   Sensitivity saved")
+                sens_all.append(pd.DataFrame(rows))
+                print(f"[INFO]   Sensitivity computed")
         except Exception as e:
             print(f"[WARN]   Sensitivity failed for {method}: {e}")
 
@@ -1001,10 +1071,19 @@ def compute_segger_metrics(method_data: dict, qc_dir: Path, base_dir: Path,
                 qmecr_df = compute_quantized_mecr_area(adata, active_pairs)
                 qmecr_df["method"] = method
                 if len(qmecr_df) > 0:
-                    qmecr_df.to_csv(qc_dir / f"segger_mecr_area_{method}.csv", index=False)
-                    print(f"[INFO]   Quantized MECR area saved")
+                    qmecr_all.append(qmecr_df)
+                    print(f"[INFO]   Quantized MECR area computed")
             except Exception as e:
                 print(f"[WARN]   Quantized MECR area failed for {method}: {e}")
+
+    for dfs, name in [(mecr_all, "segger_mecr.csv"),
+                      (contam_all, "segger_contamination.csv"),
+                      (sens_all, "segger_sensitivity.csv"),
+                      (qmecr_all, "segger_mecr_area.csv")]:
+        if dfs:
+            merged = pd.concat(dfs, ignore_index=True)
+            merged.to_csv(qc_dir / name, index=False)
+            print(f"[INFO] {name}: {len(merged)} rows, {merged['method'].nunique()} methods")
 
 
 def _find_sample_output_dir(reseg_dir: Path, sample_id: str):
@@ -1136,6 +1215,7 @@ def main():
     slide_dir = Path(args.slide_dir)
     qc_dir = (Path(output_base) / slide_dir.name if output_base else slide_dir) / "qc" / args.sample_id
     qc_dir.mkdir(parents=True, exist_ok=True)
+    _clean_stale_qc_files(qc_dir)
 
     configure_threads()
     t_start = time.time()
@@ -1186,9 +1266,11 @@ def main():
 
     print(f"[INFO] Methods to compare: {', '.join(method_data.keys())}\n")
 
-    # Copy annotation CSVs from classifier output into qc_dir so the R report can find them.
+    # Merged per-family CSVs — one <family>.csv with a `method` column
+    merged_families: dict = {}
+
+    # Collect annotation CSVs from classifier output into the merged annotations.csv.
     # The classifier writes {sample_id}_predicted_celltypes.csv alongside the h5ad.
-    import shutil as _shutil
     base_dir = Path(output_base) / slide_dir.name if output_base else slide_dir
     for method, (adata, output_dir) in method_data.items():
         if method == "xenium":
@@ -1197,15 +1279,15 @@ def main():
         else:
             annot_csv = output_dir / f"{args.sample_id}_predicted_celltypes.csv"
         if annot_csv.exists():
-            _shutil.copy(annot_csv, qc_dir / f"annotations_{method}.csv")
             print(f"[INFO] Annotation CSV found for {method}: {annot_csv.name}")
-            # Also merge annotations into adata.obs so segger metrics can use them
+            # Merge annotations into adata.obs so segger metrics can use them
             annot_df = pd.read_csv(annot_csv, index_col=0)
             annot_df.index = annot_df.index.astype(str)
             adata.obs.index = adata.obs.index.astype(str)
             for col in ["pred_cell_type", "pred_confidence"]:
                 if col in annot_df.columns:
                     adata.obs[col] = annot_df[col].reindex(adata.obs.index)
+            annot_out = annot_df
             # Xenium: fix cell ID mismatch between baseline and annotation CSV.
             # Baseline obs_names = barcode strings (from cell_feature_matrix/barcodes.tsv.gz).
             # Annotation CSV indices = integer positions (from spatialdata_io xenium_export h5ad).
@@ -1223,12 +1305,15 @@ def main():
                             for col in ["pred_cell_type", "pred_confidence"]:
                                 if col in _remapped.columns:
                                     adata.obs[col] = _remapped[col].reindex(adata.obs.index)
+                            annot_out = _remapped
                             new_frac = adata.obs.get("pred_cell_type", pd.Series(dtype=str)).notna().mean()
                             print(f"[INFO] Xenium annotation: mapped via barcodes.tsv.gz ({new_frac:.0%} matched)")
                         except Exception as _e:
                             print(f"[WARN] Xenium barcode mapping failed: {_e}")
                     else:
                         print("[WARN] Xenium annotation: barcodes.tsv.gz not found — xenium segger metrics will be skipped")
+            _accumulate_family(merged_families, "annotations",
+                               annot_out.rename_axis("cell_id").reset_index(), method)
 
     # Load Xenium nucleus boundaries once — spatially joined against every method's
     # cell polygons so nuclear_ratio is available for proseg/baysor too.
@@ -1247,7 +1332,7 @@ def main():
         # ── CellSPA R basic QC metrics ──
         @timed(f"CellSPA metrics: {method}")
         def _cellspa():
-            return run_cellspa(adata, method, qc_dir)
+            return run_cellspa(adata, method, qc_dir, acc=merged_families)
         success = _cellspa()
 
         if success:
@@ -1262,9 +1347,9 @@ def main():
                     df["pct_transcripts_captured"] = round(100.0 * assigned / total_transcripts, 2)
                     print(f"[INFO] Transcripts captured: {assigned:,} / {total_transcripts:,} "
                           f"({df['pct_transcripts_captured'].iloc[0]:.1f}%)")
-                    df.to_csv(csv, index=False)
 
                 cellspa_results.append(df)
+                csv.unlink()
 
         # ── Python morphological metrics ──
         @timed(f"Morphological metrics: {method}")
@@ -1276,13 +1361,16 @@ def main():
 
             morpho_df = compute_morphological_metrics(gdf, adata, nucleus_gdf=nucleus_gdf)
             if morpho_df is not None:
-                morpho_path = qc_dir / f"morpho_{method}.csv"
-                morpho_df.to_csv(morpho_path, index=False)
-                print(f"[INFO] Morphological metrics saved: {morpho_path.name} ({len(morpho_df)} cells)")
+                _accumulate_family(merged_families, "morpho", morpho_df, method)
+                print(f"[INFO] Morphological metrics computed for {method} ({len(morpho_df)} cells)")
         _morpho()
 
         # Python QC plots
         generate_qc_plots(adata, method, qc_dir)
+
+    # One CSV per family with a `method` column — must land before segger,
+    # which reads morpho.csv back for cell areas / centroids.
+    write_merged_families(merged_families, qc_dir)
 
     # ── Segger QC metrics (requires classifier to have run first) ──
     print("\n── Segger Metrics ──")
@@ -1292,7 +1380,7 @@ def main():
     # Combined CellSPA comparison table + PDF report
     if cellspa_results:
         comparison = pd.concat(cellspa_results, ignore_index=True)
-        comparison_csv = qc_dir / "cellspa_comparison.csv"
+        comparison_csv = qc_dir / "cellspa.csv"
         comparison.to_csv(comparison_csv, index=False)
         print(f"\n── CellSPA Comparison ──")
         print(comparison.to_string(index=False))

@@ -29,7 +29,7 @@ from typing import List, Optional
 # To promote a method: delete it from this set, confirm it has an entry in
 # METHOD_SCRIPTS (scripts/slurm/generate_slurm.py), and give it defaults in the
 # wizard's METHOD_DEFAULTS.
-COMING_SOON = {"bidcell", "bering", "segger"}
+COMING_SOON = {"bidcell", "bering", "segger", "mesmer"}
 
 # Platforms the loader can actually read. Same rule as methods — the wizard
 # offers the rest as "(coming soon)" rather than letting a run fail at load time.
