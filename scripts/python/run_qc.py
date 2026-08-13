@@ -1,8 +1,8 @@
 """
-run_qc.py — CellSPA QC across all completed segmentation results for a single sample.
+run_qc.py — QC across all completed segmentation results for a single sample.
 
 Auto-discovers completed methods by scanning *_reseg/ dirs for h5ad files.
-Runs CellSPA (R) for reference-free basic metrics + Python morphological metrics.
+Computes summary + morphological metrics in Python (shapely / scipy).
 
 Called by the generated SLURM script:
     python run_qc.py --config CONFIG --sample-id XETG... --slide-dir /path/to/slide_folder
@@ -27,69 +27,13 @@ from utils.config_loader import load_config, get_method_config, get_output_base_
 from utils.data_io import configure_threads, save_run_metadata, timed
 
 
-# ── CellSPA R script (basic QC metrics only) ───────────────────────────────────
-# Reads pre-exported CSV/MTX files from Python — no zellkonverter needed.
-#
-# DEPRECATED: CellSPA morphological metrics (calBaselineAllMetrics / generatePolygon)
-#   CellSPA's generatePolygon() consistently returns 0 polygons due to internal
-#   bugs incompatible with our boundary format. Morphological metrics are now
-#   computed in Python via compute_morphological_metrics() using shapely geometry.
-#
-# DEPRECATED: CellSPA spatial diversity metrics (calSpatialMetricsDiversity)
-#   Spatial diversity metrics are not computed here. If needed, implement
-#   directly in Python.
-CELLSPA_R_SCRIPT = """\
-suppressPackageStartupMessages({
-    library(CellSPA)
-    library(SpatialExperiment)
-    library(SingleCellExperiment)
-    library(Matrix)
-})
-
-args          <- commandArgs(trailingOnly = TRUE)
-counts_path   <- args[1]
-coords_path   <- args[2]
-meta_path     <- args[3]
-method_name   <- args[4]
-output_dir    <- args[5]
-
-cat(sprintf("[INFO] CellSPA QC: %s\\n", method_name))
-
-counts  <- readMM(counts_path)
-coords  <- as.matrix(read.csv(coords_path)[, c("x", "y")])
-meta_df <- read.csv(meta_path, row.names = 1)
-
-cat(sprintf("[INFO] Loaded: %d cells x %d genes\\n", ncol(counts), nrow(counts)))
-
-spe <- SpatialExperiment(
-    assays        = list(counts = counts),
-    colData       = meta_df,
-    spatialCoords = coords
-)
-
-# Add placeholder celltype — required by CellSPA processingSPE
-colData(spe)$celltype <- "all"
-
-spe <- tryCatch(processingSPE(spe), error = function(e) {
-    cat(sprintf("[WARN] processingSPE: %s\\n", e$message)); spe
-})
-cat(sprintf("[INFO] After filtering: %d cells\\n", ncol(spe)))
-
-# ── Basic QC summary ──
-summary_df <- data.frame(
-    method        = method_name,
-    n_cells       = ncol(spe),
-    n_genes       = nrow(spe),
-    median_counts = median(colSums(counts(spe))),
-    median_genes  = median(colSums(counts(spe) > 0)),
-    stringsAsFactors = FALSE
-)
-
-out_path <- file.path(output_dir, sprintf("cellspa_%s.csv", method_name))
-write.csv(summary_df, out_path, row.names = FALSE)
-cat(sprintf("[INFO] Saved: %s\\n", out_path))
-print(summary_df)
-"""
+# CellSPA was removed 2026-08-13: its usage had shrunk to one tryCatch'd
+# processingSPE() call in an R subprocess whose only output was four base
+# statistics — now computed directly in compute_summary_stats(). Its
+# morphological metrics were dropped long before (generatePolygon() returned
+# 0 polygons on our boundary format) in favor of the shapely-based
+# compute_morphological_metrics(). The summary CSV keeps the historical
+# name cellspa.csv; the wizard method key stays cellspa_qc.
 
 # ── PDF report R script path (standalone file — see scripts/r/qc_report.R) ────
 _QC_REPORT_R_SCRIPT = Path(__file__).resolve().parent.parent / "r" / "qc_report.R"
@@ -371,28 +315,27 @@ def _clean_stale_qc_files(qc_dir: Path):
     outputs. counts_<method>.mtx is still current and cellseg_*.csv predates
     this pipeline, so both are left alone."""
     for pattern in ("annotations_*.csv", "cellspa_*.csv", "coords_*.csv",
-                    "meta_*.csv", "morpho_*.csv", "run_cellspa_*.R"):
+                    "meta_*.csv", "morpho_*.csv", "run_cellspa_*.R", "run_cellspa.R"):
         for stale in qc_dir.glob(pattern):
             stale.unlink()
 
 
-def export_for_r(adata, method: str, qc_dir: Path) -> tuple:
-    """Export counts, coords, and obs metadata for the CellSPA R script.
+def export_matrices(adata, method: str, qc_dir: Path, acc: Optional[dict] = None):
+    """Export counts_<method>.mtx and accumulate coords/meta for the merged CSVs.
 
-    Returns (counts_path, coords_path, meta_path, coords_df, meta_df).
-    coords_df / meta_df carry an explicit cell_id column for the merged
-    per-family CSVs; the on-disk per-method files are temporary R inputs.
+    counts stays per method — MatrixMarket format has no columns to carry a
+    method label; its column order matches the cell_id order of that method's
+    rows in coords.csv / meta.csv.
     """
     from scipy.io import mmwrite
     import scipy.sparse as sp
 
-    counts_path = qc_dir / f"counts_{method}.mtx"
-    coords_path = qc_dir / f"coords_{method}.csv"
-    meta_path   = qc_dir / f"meta_{method}.csv"
-
     # Write genes × cells MTX
     X = adata.X if sp.issparse(adata.X) else sp.csr_matrix(adata.X)
-    mmwrite(str(counts_path), X.T)
+    mmwrite(str(qc_dir / f"counts_{method}.mtx"), X.T)
+
+    if acc is None:
+        return
 
     # Extract spatial coords — sopa stores them in obsm['spatial']
     if "spatial" in adata.obsm:
@@ -401,66 +344,45 @@ def export_for_r(adata, method: str, qc_dir: Path) -> tuple:
         xy_cols = [c for c in adata.obs.columns if c in ("x", "y", "spatial_x", "spatial_y")]
         coords = adata.obs[xy_cols[:2]].values if len(xy_cols) >= 2 else None
 
-    coords_df = None
     if coords is not None:
-        coords_df = pd.DataFrame({"cell_id": adata.obs_names.astype(str),
-                                  "x": coords[:, 0], "y": coords[:, 1]})
-        coords_df.to_csv(coords_path, index=False)
+        _accumulate_family(acc, "coords",
+                           pd.DataFrame({"cell_id": adata.obs_names.astype(str),
+                                         "x": coords[:, 0], "y": coords[:, 1]}), method)
     else:
-        print(f"[WARN] No spatial coordinates found for {method} — spatial metrics will be skipped")
-        coords_path = None
+        print(f"[WARN] No spatial coordinates found for {method}")
 
-    # Export numeric obs metadata as R colData.
-    # Write cell IDs as row names so SPE colnames match expected cell identifiers.
-    numeric_obs = adata.obs.select_dtypes(include="number")
-    if numeric_obs.shape[1] == 0:
-        numeric_obs = pd.DataFrame({"placeholder": np.zeros(len(adata), dtype=np.float32)},
-                                   index=adata.obs_names)
-    else:
-        numeric_obs = numeric_obs.copy()
-        numeric_obs.index = adata.obs_names
-    numeric_obs.to_csv(meta_path, index=True, index_label="cell_id")
-
+    numeric_obs = adata.obs.select_dtypes(include="number").copy()
+    numeric_obs.index = adata.obs_names
     meta_df = numeric_obs.rename_axis("cell_id").reset_index()
     meta_df["cell_id"] = meta_df["cell_id"].astype(str)
+    _accumulate_family(acc, "meta", meta_df, method)
 
-    return counts_path, coords_path, meta_path, coords_df, meta_df
 
+def compute_summary_stats(adata, method: str, qc_dir: Path, acc: Optional[dict] = None) -> pd.DataFrame:
+    """Per-method QC summary row (replaces the former CellSPA R round-trip).
 
-def run_cellspa(adata, method: str, qc_dir: Path, acc: Optional[dict] = None) -> bool:
-    """Export data, write and run the CellSPA R script for one method. Returns True on success.
-
-    The per-method coords/meta CSVs are temporary R inputs: their contents go
-    into `acc` for the merged coords.csv / meta.csv and the files are removed
-    afterwards. counts_<method>.mtx stays per method — MatrixMarket format has
-    no columns to carry a method label; its column order matches the cell_id
-    order of that method's rows in coords.csv / meta.csv.
+    Zero-count cells are dropped before the medians — the visible effect of
+    CellSPA's processingSPE() on our data. Also exports counts_<method>.mtx
+    and accumulates coords/meta via export_matrices().
     """
-    counts_path, coords_path, meta_path, coords_df, meta_df = export_for_r(adata, method, qc_dir)
-    if acc is not None:
-        if coords_df is not None:
-            _accumulate_family(acc, "coords", coords_df, method)
-        _accumulate_family(acc, "meta", meta_df, method)
-    if coords_path is None:
-        meta_path.unlink(missing_ok=True)
-        return False
+    import scipy.sparse as sp
 
-    r_script = qc_dir / "run_cellspa.R"
-    r_script.write_text(CELLSPA_R_SCRIPT)
+    export_matrices(adata, method, qc_dir, acc)
 
-    cmd = [
-        "Rscript", str(r_script),
-        str(counts_path), str(coords_path), str(meta_path),
-        method, str(qc_dir),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    print(result.stdout)
-    ok = result.returncode == 0
-    if not ok:
-        print(f"[ERROR] CellSPA R failed for {method}:\n{result.stderr}")
-    coords_path.unlink(missing_ok=True)
-    meta_path.unlink(missing_ok=True)
-    return ok
+    X = adata.X if sp.issparse(adata.X) else sp.csr_matrix(adata.X)
+    counts_per_cell = np.asarray(X.sum(axis=1)).ravel()
+    genes_per_cell = np.asarray((X > 0).sum(axis=1)).ravel()
+    keep = counts_per_cell > 0
+    if keep.sum() < adata.n_obs:
+        print(f"[INFO] Summary stats: dropped {adata.n_obs - keep.sum()} zero-count cells")
+
+    return pd.DataFrame([{
+        "method": method,
+        "n_cells": int(keep.sum()),
+        "n_genes": int(adata.n_vars),
+        "median_counts": float(np.median(counts_per_cell[keep])) if keep.any() else float("nan"),
+        "median_genes": float(np.median(genes_per_cell[keep])) if keep.any() else float("nan"),
+    }])
 
 
 def _stitch_pdfs(pages: list, output: Path):
@@ -782,21 +704,16 @@ def _run_multi_sample_qc(args):
         print(f"\n── {method} ──")
         print(f"[INFO] {adata.n_obs} cells × {adata.n_vars} genes")
 
-        @timed(f"CellSPA metrics: {method}")
-        def _cellspa():
-            return run_cellspa(adata, method, qc_dir, acc=merged_families)
-        success = _cellspa()
+        @timed(f"Summary stats: {method}")
+        def _summary():
+            return compute_summary_stats(adata, method, qc_dir, acc=merged_families)
+        df = _summary()
 
-        if success:
-            csv = qc_dir / f"cellspa_{method}.csv"
-            if csv.exists():
-                df = pd.read_csv(csv)
-                if total_transcripts:
-                    X = adata.X
-                    assigned = int(X.sum()) if sp.issparse(X) else int(np.sum(X))
-                    df["pct_transcripts_captured"] = round(100.0 * assigned / total_transcripts, 2)
-                cellspa_results.append(df)
-                csv.unlink()
+        if total_transcripts:
+            X = adata.X
+            assigned = int(X.sum()) if sp.issparse(X) else int(np.sum(X))
+            df["pct_transcripts_captured"] = round(100.0 * assigned / total_transcripts, 2)
+        cellspa_results.append(df)
 
         @timed(f"Morphological metrics: {method}")
         def _morpho(method=method):
@@ -845,7 +762,7 @@ def _run_multi_sample_qc(args):
         comparison = pd.concat(cellspa_results, ignore_index=True)
         comparison_csv = qc_dir / "cellspa.csv"
         comparison.to_csv(comparison_csv, index=False)
-        print(f"\n── CellSPA Comparison ──")
+        print(f"\n── QC Summary ──")
         print(comparison.to_string(index=False))
 
         guide_dir = Path(__file__).parents[2] / "guide_pgs"
@@ -1185,7 +1102,7 @@ def load_xenium_baseline(sample_dir: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="CellSPA QC — all completed segmentation methods")
+    parser = argparse.ArgumentParser(description="QC — all completed segmentation methods")
     parser.add_argument("--config", required=True)
     parser.add_argument("--slide-dir", required=True, help="Slide folder containing {method}_reseg/ dirs")
     parser.add_argument("--reference-path", default=None, help="Reference h5ad path (to locate classifier cache)")
@@ -1221,7 +1138,7 @@ def main():
     t_start = time.time()
 
     print("=" * 60)
-    print(f"  CellSPA QC — {args.sample_id}")
+    print(f"  QC — {args.sample_id}")
     print("=" * 60)
 
     # Count total transcripts once for % capture calculation
@@ -1329,27 +1246,21 @@ def main():
         print(f"\n── {method} ──")
         print(f"[INFO] {adata.n_obs} cells × {adata.n_vars} genes")
 
-        # ── CellSPA R basic QC metrics ──
-        @timed(f"CellSPA metrics: {method}")
-        def _cellspa():
-            return run_cellspa(adata, method, qc_dir, acc=merged_families)
-        success = _cellspa()
+        # ── Summary QC stats ──
+        @timed(f"Summary stats: {method}")
+        def _summary():
+            return compute_summary_stats(adata, method, qc_dir, acc=merged_families)
+        df = _summary()
 
-        if success:
-            csv = qc_dir / f"cellspa_{method}.csv"
-            if csv.exists():
-                df = pd.read_csv(csv)
+        # % transcripts captured
+        if total_transcripts:
+            X = adata.X
+            assigned = int(X.sum()) if sp.issparse(X) else int(np.sum(X))
+            df["pct_transcripts_captured"] = round(100.0 * assigned / total_transcripts, 2)
+            print(f"[INFO] Transcripts captured: {assigned:,} / {total_transcripts:,} "
+                  f"({df['pct_transcripts_captured'].iloc[0]:.1f}%)")
 
-                # % transcripts captured
-                if total_transcripts:
-                    X = adata.X
-                    assigned = int(X.sum()) if sp.issparse(X) else int(np.sum(X))
-                    df["pct_transcripts_captured"] = round(100.0 * assigned / total_transcripts, 2)
-                    print(f"[INFO] Transcripts captured: {assigned:,} / {total_transcripts:,} "
-                          f"({df['pct_transcripts_captured'].iloc[0]:.1f}%)")
-
-                cellspa_results.append(df)
-                csv.unlink()
+        cellspa_results.append(df)
 
         # ── Python morphological metrics ──
         @timed(f"Morphological metrics: {method}")
@@ -1382,7 +1293,7 @@ def main():
         comparison = pd.concat(cellspa_results, ignore_index=True)
         comparison_csv = qc_dir / "cellspa.csv"
         comparison.to_csv(comparison_csv, index=False)
-        print(f"\n── CellSPA Comparison ──")
+        print(f"\n── QC Summary ──")
         print(comparison.to_string(index=False))
 
         guide_dir = Path(__file__).parents[2] / "guide_pgs"
@@ -1405,7 +1316,7 @@ def main():
 
     elapsed = time.time() - t_start
     save_run_metadata(qc_dir, "qc", method_cfg, elapsed)
-    print(f"\n[DONE] CellSPA QC — {args.sample_id} — {elapsed / 60:.1f} min")
+    print(f"\n[DONE] QC — {args.sample_id} — {elapsed / 60:.1f} min")
 
 
 if __name__ == "__main__":

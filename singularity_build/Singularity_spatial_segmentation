@@ -3,7 +3,7 @@ From: ubuntu:20.04
 
 %labels
   Maintainer Zach Stensland
-  Description Spatial segmentation container (SOPA + ProSeg + Baysor + BIDCell + FastReseg + Bering + Segger + StarDist + ComSeg + Mesmer + CellSPA + patchwork + pypdf + XGBoost classifier)
+  Description Spatial segmentation container (SOPA + ProSeg + Baysor + BIDCell + FastReseg + Bering + Segger + StarDist + ComSeg + Mesmer + patchwork + pypdf + XGBoost classifier)
   python_version 3.10
   julia_version 1.10
 
@@ -28,8 +28,7 @@ From: ubuntu:20.04
   # ----------------------------------------------------------------
   # REPRODUCIBILITY: Python packages are pinned to the validated seg_sin_v8
   # image (pip list dump, 2026-08-13) — see the env yml and the ==X.Y.Z pins
-  # below, plus proseg 3.1.1 (cargo), FastReseg v1.1.1 and CellSPA v0.1.0
-  # (github tags). STILL FLOATING: Baysor / segger git clones (pin tags or
+  # below, plus proseg 3.1.1 (cargo), FastReseg v1.1.1 (github tag). STILL FLOATING: Baysor / segger git clones (pin tags or
   # commit SHAs when chosen), GiottoUtils / GiottoClass, deepcell.
   # ----------------------------------------------------------------
 
@@ -272,20 +271,13 @@ PYEOF
   echo "setuptools version: $($ENV_PIP show setuptools | grep ^Version)"
 
   # ================================================================
-  # 4. R PACKAGES: FastReseg + CellSPA (from GitHub/Bioconductor)
+  # 4. R PACKAGES: FastReseg (from GitHub)
   # ================================================================
   # All heavy R dependencies (sf, lwgeom, igraph, concaveman, terra, etc.)
   # are already installed via conda. Now we just add the R packages that
-  # aren't on conda-forge: FastReseg, CellSPA, and their GitHub deps.
-
-  # Install grr (removed from CRAN for R 4.5, needed by CellSPA)
-  Rscript -e '
-    cat("Installing grr from CRAN archive...\n")
-    install.packages("https://cran.r-project.org/src/contrib/Archive/grr/grr_0.9.5.tar.gz",
-                     repos=NULL, type="source")
-    if (!requireNamespace("grr", quietly=TRUE)) stop("grr FAILED")
-    cat("grr OK\n")
-  '
+  # aren't on conda-forge. (CellSPA + its grr CRAN-archive hack were removed
+  # 2026-08-13 — QC computes its summary in Python now; run_qc.py has the
+  # history.)
 
   # Install FastReseg (needs GiottoUtils + GiottoClass from GitHub)
   Rscript -e '
@@ -303,15 +295,6 @@ PYEOF
                             upgrade="never", dependencies=TRUE)
     if (!requireNamespace("FastReseg", quietly=TRUE)) stop("FastReseg FAILED")
     cat("FastReseg:", as.character(packageVersion("FastReseg")), "\n")
-  '
-
-  # Install CellSPA
-  Rscript -e '
-    library(BiocManager)
-    cat("Installing CellSPA...\n")
-    BiocManager::install("SydneyBioX/CellSPA@v0.1.0", update=FALSE, ask=FALSE)
-    if (!requireNamespace("CellSPA", quietly=TRUE)) stop("CellSPA FAILED")
-    cat("CellSPA:", as.character(packageVersion("CellSPA")), "\n")
   '
 
   # Install patchwork (ggplot2 multi-panel layout)
@@ -507,7 +490,6 @@ PYEOF
   [ -x /opt/baysor/bin/baysor ] || FAILURES="$FAILURES baysor"
   Rscript -e 'cat("sf:         ", as.character(packageVersion("sf")), "\n")' || FAILURES="$FAILURES r-sf"
   Rscript -e 'cat("FastReseg:  ", as.character(packageVersion("FastReseg")), "\n")' || FAILURES="$FAILURES FastReseg"
-  Rscript -e 'cat("CellSPA:    ", as.character(packageVersion("CellSPA")), "\n")' || FAILURES="$FAILURES CellSPA"
   Rscript -e 'cat("patchwork:  ", as.character(packageVersion("patchwork")), "\n")' || FAILURES="$FAILURES patchwork"
 
   if [ -n "$FAILURES" ]; then
@@ -530,7 +512,7 @@ PYEOF
   $ENV_PYTHON -c "import Bering; print('Bering OK')" || echo "NOTE: Bering not installed (coming soon)"
   $ENV_PYTHON -c "import segger; print('segger OK')" || echo "NOTE: segger not installed (coming soon)"
   $MESMER_PYTHON -c "import deepcell; print('deepcell OK (mesmer_env)')" || echo "NOTE: deepcell not installed (Mesmer coming soon)"
-  Rscript -e 'library(sf); library(FastReseg); library(CellSPA); library(patchwork); cat("R imports OK\n")'
+  Rscript -e 'library(sf); library(FastReseg); library(patchwork); cat("R imports OK\n")'
   /opt/cargo/bin/proseg --help > /dev/null 2>&1 && echo "proseg found" || echo "proseg NOT found"
   /opt/baysor/bin/baysor --help > /dev/null 2>&1 && echo "baysor found" || echo "baysor NOT found"
   echo "smoke test passed"
@@ -538,7 +520,7 @@ PYEOF
 %help
   Spatial Segmentation Container
   ==================================
-  Contains: SOPA, ProSeg, Baysor, BIDCell, Cellpose, FastReseg, Bering, Segger, StarDist, ComSeg, Mesmer, CellSPA, patchwork, XGBoost classifier
+  Contains: SOPA, ProSeg, Baysor, BIDCell, Cellpose, FastReseg, Bering, Segger, StarDist, ComSeg, Mesmer, patchwork, XGBoost classifier
 
   Conda environments:
     - spatial_segmentation_env: main env — segmentation methods, QC, aggregation
