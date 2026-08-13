@@ -1,26 +1,5 @@
-# Generated SLURM scripts
-scripts/slurm/generated/
+# Secrets — never commit
+singularity_build/deepcell_token.txt
 
-# Wizard-generated configs (contain user-specific paths/credentials)
-config/pipeline_*_2*.yaml
-
-# Runtime outputs
-segmentation_results/
-reference_data/
-# Notebooks (kept local, not tracked)
-notebooks/
-
-# Assistant working notes — local context, not project documentation
-memory/
-
-# Python
 __pycache__/
 *.pyc
-.ipynb_checkpoints/
-
-# OS
-.DS_Store
-__MACOSX/
-
-# Adobe Illustrator
-*.ai

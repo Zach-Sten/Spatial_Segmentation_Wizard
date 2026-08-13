@@ -1,0 +1,546 @@
+BootStrap: docker
+From: ubuntu:20.04
+
+%labels
+  Maintainer Zach Stensland
+  Description Spatial segmentation container (SOPA + ProSeg + Baysor + BIDCell + FastReseg + Bering + Segger + StarDist + ComSeg + Mesmer + CellSPA + patchwork + pypdf + XGBoost classifier)
+  python_version 3.10
+  julia_version 1.10
+
+# Recipe is versionless on purpose — version the built .sif filename instead.
+# Build from inside singularity_build/ (the %setup copies are cwd-relative):
+#   sudo apptainer build spatial_segmentation_YYYYMMDD.sif Singularity_spatial_segmentation
+# Optional: place deepcell_token.txt (users.deepcell.org access token) next to
+# this recipe to bake Mesmer weights into the image (required for offline
+# compute nodes).
+
+%setup
+  cp spatial_segmentation_env_v3.yml ${SINGULARITY_ROOTFS}/spatial_segmentation_env_v3.yml
+  if [ -f deepcell_token.txt ]; then cp deepcell_token.txt ${SINGULARITY_ROOTFS}/deepcell_token.txt; fi
+
+%apprun jupyter
+  exec jupyter lab "$@"
+
+%runscript
+  exec /bin/bash "$@"
+
+%post
+  # ----------------------------------------------------------------
+  # REPRODUCIBILITY: Python packages are pinned to the validated seg_sin_v8
+  # image (pip list dump, 2026-08-13) — see the env yml and the ==X.Y.Z pins
+  # below, plus proseg 3.1.1 (cargo), FastReseg v1.1.1 and CellSPA v0.1.0
+  # (github tags). STILL FLOATING: Baysor / segger git clones (pin tags or
+  # commit SHAs when chosen), GiottoUtils / GiottoClass, deepcell.
+  # ----------------------------------------------------------------
+
+  # ================================================================
+  # 0. TIMEZONE & LOCALE
+  # ================================================================
+  TZ=America/Los_Angeles
+  ln -snf /usr/share/zoneinfo/$TZ /etc/localtime
+  echo $TZ > /etc/timezone
+  export DEBIAN_FRONTEND="noninteractive"
+
+  apt-get update
+  apt-get install -y --no-install-recommends locales
+  echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen
+  locale-gen en_US.utf8
+  /usr/sbin/update-locale LANG=en_US.UTF-8
+  export LC_ALL=en_US.UTF-8
+  export LANG=en_US.UTF-8
+  export LANGUAGE=en_US.UTF-8
+
+  # ================================================================
+  # 1. SYSTEM DEPENDENCIES
+  # ================================================================
+  apt-get update
+  apt-get install -y \
+    apt-utils \
+    build-essential \
+    cmake \
+    curl \
+    gfortran \
+    git \
+    gnupg \
+    gnupg2 \
+    libcairo2-dev \
+    libffi-dev \
+    libglib2.0-dev \
+    libgl1 \
+    libssl-dev \
+    nano \
+    pkg-config \
+    tree \
+    vim \
+    wget \
+    || true
+  # Second pass: pick up anything the proxy dropped on first attempt
+  apt-get install -y --fix-missing \
+    apt-utils \
+    build-essential \
+    cmake \
+    curl \
+    gfortran \
+    git \
+    gnupg \
+    gnupg2 \
+    libcairo2-dev \
+    libffi-dev \
+    libglib2.0-dev \
+    libgl1 \
+    libssl-dev \
+    nano \
+    pkg-config \
+    tree \
+    vim \
+    wget
+
+  apt-get clean
+  rm -rf /var/lib/apt/lists/*
+
+  # ================================================================
+  # 2. MINIFORGE (mamba + conda)
+  # ================================================================
+  MINIFORGE_VERSION="24.11.3-0"
+  wget -q https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/Miniforge3-${MINIFORGE_VERSION}-Linux-x86_64.sh \
+    -O /tmp/miniforge.sh
+  bash /tmp/miniforge.sh -b -p /opt/miniforge3
+  rm /tmp/miniforge.sh
+
+  export PATH=/opt/miniforge3/bin:${PATH}
+
+  # ================================================================
+  # 3. CONDA ENVIRONMENT (Python + R + spatial libs, solved together)
+  # ================================================================
+  mamba env create -f /spatial_segmentation_env_v3.yml
+  mamba clean -afy
+
+  . /opt/miniforge3/etc/profile.d/conda.sh
+  conda activate spatial_segmentation_env
+
+  # Use explicit path so fixes target the right env (conda activate is unreliable
+  # in non-interactive %post shells)
+  ENV_PIP=/opt/miniforge3/envs/spatial_segmentation_env/bin/pip
+  ENV_PYTHON=/opt/miniforge3/envs/spatial_segmentation_env/bin/python
+
+  # Fix GLIBCXX: conda's libstdc++ is newer than Ubuntu 20.04's system one.
+  CONDA_LIBSTDCXX=$(find /opt/miniforge3/envs/spatial_segmentation_env/lib -name "libstdc++.so.6.*" | sort -V | tail -1)
+  if [ -n "$CONDA_LIBSTDCXX" ]; then
+    cp "$CONDA_LIBSTDCXX" /usr/lib/x86_64-linux-gnu/
+    ln -sf "$(basename $CONDA_LIBSTDCXX)" /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+    ldconfig
+    echo "Fixed GLIBCXX: using $CONDA_LIBSTDCXX"
+  fi
+
+  # Pin numpy for BIDCell/imgaug compatibility
+  $ENV_PIP install numpy==1.26.4 --no-deps --force-reinstall
+  echo "Pinned numpy to 1.26.4 for BIDCell compatibility"
+
+  # Fix: squidpy from conda uses anndata internal APIs (SparseCSCView) that were
+  # removed in anndata 0.11. Reinstall squidpy via pip to get the latest version
+  # that's compatible with anndata 0.11.4
+  $ENV_PIP install "squidpy==1.6.5" --force-reinstall --no-deps
+
+  # Re-pin numpy again in case any of the above touched it
+  $ENV_PIP install numpy==1.26.4 --no-deps --force-reinstall
+
+  # PDF stitching for QC report guide pages
+  $ENV_PIP install pypdf==6.9.2
+
+  # Pre-cache cellpose CPSAM model during build so HPC compute nodes (no outbound
+  # internet) can load it at runtime. cellpose 4.x changed default model to cpsam
+  # (SAM-based) and attempts to download it on first use — this bakes it into the .sif.
+  $ENV_PYTHON -c "
+import os
+os.environ['CELLPOSE_LOCAL_MODELS_PATH'] = '/opt/cellpose_models'
+os.makedirs('/opt/cellpose_models', exist_ok=True)
+from cellpose import models
+print('Pre-caching cellpose CPSAM model...')
+models.CellposeModel(pretrained_model='cpsam', gpu=False)
+print('CPSAM model cached OK')
+"
+  # No fallback: compute nodes have no internet, so a missing baked-in model
+  # means cellpose is guaranteed broken at runtime. Fail the build instead.
+
+  # torch_scatter — required by Segger (PyG wheel index, must match torch+CUDA version)
+  TORCH_VERSION=$($ENV_PYTHON -c "import torch; print(torch.__version__.split('+')[0])")
+  $ENV_PIP install torch_scatter -f https://data.pyg.org/whl/torch-${TORCH_VERSION}+cu121.html \
+    || echo "WARNING: torch_scatter install failed — Segger may not work"
+
+  # RAPIDS (cuDF/cuML/cuGraph) — required by Segger
+  $ENV_PIP install \
+    cudf-cu12==24.10.1 \
+    cuml-cu12==24.10.0 \
+    cugraph-cu12==24.10.0 \
+    --extra-index-url=https://pypi.nvidia.com \
+    || echo "WARNING: RAPIDS install failed — Segger GPU features may not work"
+
+  # Patch cudf/__init__.py to wrap validate_setup() in a try/except so CPU-only
+  # nodes don't crash on "import cudf" / "import spatialdata".
+  # Previous approach (patching gpu_utils.py internal pattern) was fragile — the
+  # exact except/raise pattern changes between cudf versions and the patch silently
+  # failed in v5/v8. Patching the call site in __init__.py is version-independent.
+  $ENV_PYTHON - <<'PYEOF'
+import site, pathlib
+patched = False
+for sp in site.getsitepackages():
+    p = pathlib.Path(sp) / "cudf" / "__init__.py"
+    if not p.exists():
+        continue
+    txt = p.read_text()
+    # Only patch if not already patched
+    if "GPU unavailable" in txt:
+        print(f"[INFO] cudf __init__.py already patched: {p}")
+        patched = True
+        break
+    old = "validate_setup()"
+    new = (
+        "try:\n"
+        "    validate_setup()\n"
+        "except Exception as _cudf_gpu_err:\n"
+        "    import warnings as _w\n"
+        "    _w.warn(f'cudf: GPU unavailable ({_cudf_gpu_err}). GPU features disabled.')\n"
+    )
+    if old in txt:
+        txt = txt.replace(old, new, 1)
+        p.write_text(txt)
+        print(f"[INFO] Patched cudf __init__.py: {p}")
+        patched = True
+    break
+if not patched:
+    print("[WARN] cudf __init__.py patch not applied — validate_setup() call not found")
+PYEOF
+
+  # Segger — graph neural network segmentation (install from source)
+  # Editable install (-e) can fail in container builds due to isolation; use
+  # regular install with --no-build-isolation fallback.
+  git clone https://github.com/dpeerlab/segger.git /opt/segger-src
+  $ENV_PIP install /opt/segger-src \
+    || $ENV_PIP install /opt/segger-src --no-build-isolation \
+    || echo "WARNING: Segger install failed"
+
+  # StarDist — nucleus/cell segmentation, SOPA-supported
+  # tensorflow-cpu: avoids CUDA conflicts with PyTorch; stardist pretrained
+  # models run fine on CPU via csbdeep (GPU inference can still use --nv if TF
+  # finds a compatible driver at runtime)
+  # StarDist is a supported wizard-selectable method — installs must not be
+  # allowed to fail silently.
+  $ENV_PIP install tensorflow-cpu==2.16.2
+  $ENV_PIP install stardist==0.9.2
+
+  # Pre-cache StarDist pretrained models during build so HPC compute nodes
+  # (no outbound internet) can load them at runtime.
+  # IMPORTANT: csbdeep (stardist's backend) uses CSBDEEP_CACHE_DIR, NOT KERAS_HOME.
+  # If CSBDEEP_CACHE_DIR is unset it falls back to ~/.keras (nonexistent in container).
+  mkdir -p /opt/stardist_models
+  CSBDEEP_CACHE_DIR=/opt/stardist_models $ENV_PYTHON -c "
+import os, traceback
+os.environ['CSBDEEP_CACHE_DIR'] = '/opt/stardist_models'
+from stardist.models import StarDist2D
+try:
+    print('Pre-caching StarDist 2D_versatile_fluo...')
+    StarDist2D.from_pretrained('2D_versatile_fluo')
+    print('Pre-caching StarDist 2D_versatile_he...')
+    StarDist2D.from_pretrained('2D_versatile_he')
+    print('StarDist models cached OK')
+except Exception as e:
+    traceback.print_exc()
+    raise
+"
+
+  # Re-pin numpy: tensorflow may have bumped it
+  $ENV_PIP install numpy==1.26.4 --no-deps --force-reinstall
+
+  # ComSeg — combinatorial transcript segmentation, SOPA-supported.
+  # Supported method: hard fail if the install breaks.
+  $ENV_PIP install comseg==1.8.5
+
+  # LAST: force setuptools<81 so pkg_resources is available (xarray_schema dep).
+  # Must come after all other pip installs in case any of them upgraded setuptools.
+  $ENV_PIP install "setuptools<81" --force-reinstall
+  echo "setuptools version: $($ENV_PIP show setuptools | grep ^Version)"
+
+  # ================================================================
+  # 4. R PACKAGES: FastReseg + CellSPA (from GitHub/Bioconductor)
+  # ================================================================
+  # All heavy R dependencies (sf, lwgeom, igraph, concaveman, terra, etc.)
+  # are already installed via conda. Now we just add the R packages that
+  # aren't on conda-forge: FastReseg, CellSPA, and their GitHub deps.
+
+  # Install grr (removed from CRAN for R 4.5, needed by CellSPA)
+  Rscript -e '
+    cat("Installing grr from CRAN archive...\n")
+    install.packages("https://cran.r-project.org/src/contrib/Archive/grr/grr_0.9.5.tar.gz",
+                     repos=NULL, type="source")
+    if (!requireNamespace("grr", quietly=TRUE)) stop("grr FAILED")
+    cat("grr OK\n")
+  '
+
+  # Install FastReseg (needs GiottoUtils + GiottoClass from GitHub)
+  Rscript -e '
+    library(remotes)
+    cat("Installing GiottoUtils...\n")
+    remotes::install_github("drieslab/GiottoUtils", upgrade="never")
+    # Upgrade terra first — GiottoClass requires >= 1.8.21
+    if (packageVersion("terra") < "1.8.21") {
+      install.packages("terra", repos="https://cloud.r-project.org")
+    }
+    cat("Installing GiottoClass...\n")
+    remotes::install_github("drieslab/GiottoClass", upgrade="never")
+    cat("Installing FastReseg...\n")
+    remotes::install_github("Nanostring-Biostats/FastReseg", ref="v1.1.1",
+                            upgrade="never", dependencies=TRUE)
+    if (!requireNamespace("FastReseg", quietly=TRUE)) stop("FastReseg FAILED")
+    cat("FastReseg:", as.character(packageVersion("FastReseg")), "\n")
+  '
+
+  # Install CellSPA
+  Rscript -e '
+    library(BiocManager)
+    cat("Installing CellSPA...\n")
+    BiocManager::install("SydneyBioX/CellSPA@v0.1.0", update=FALSE, ask=FALSE)
+    if (!requireNamespace("CellSPA", quietly=TRUE)) stop("CellSPA FAILED")
+    cat("CellSPA:", as.character(packageVersion("CellSPA")), "\n")
+  '
+
+  # Install patchwork (ggplot2 multi-panel layout)
+  Rscript -e '
+    cat("Installing patchwork...\n")
+    install.packages("patchwork", repos="https://cloud.r-project.org", quiet=TRUE)
+    if (!requireNamespace("patchwork", quietly=TRUE)) stop("patchwork FAILED")
+    cat("patchwork:", as.character(packageVersion("patchwork")), "\n")
+  '
+
+  # ================================================================
+  # 5. RUST + PROSEG
+  # ================================================================
+  export RUSTUP_HOME=/opt/rustup
+  export CARGO_HOME=/opt/cargo
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+  export PATH=/opt/cargo/bin:${PATH}
+
+  cargo install proseg --version 3.1.1
+  proseg --help || echo "WARNING: proseg --help returned non-zero (may be normal)"
+
+  rm -rf /opt/cargo/registry
+  rm -rf /opt/cargo/git
+
+  # ================================================================
+  # 6. JULIA 1.10 + BAYSOR
+  # ================================================================
+  mkdir -p /tmp
+
+  JULIA_MAJOR=1.10
+  JULIA_VERSION=1.10.8
+  wget -q https://julialang-s3.julialang.org/bin/linux/x64/${JULIA_MAJOR}/julia-${JULIA_VERSION}-linux-x86_64.tar.gz \
+    -O /tmp/julia.tar.gz
+  tar -xzf /tmp/julia.tar.gz -C /opt/
+  mv /opt/julia-${JULIA_VERSION} /opt/julia
+  rm /tmp/julia.tar.gz
+  export PATH=/opt/julia/bin:${PATH}
+
+  # Clone Baysor and disable PackageCompiler build (OOM on low-RAM nodes)
+  git clone https://github.com/kharchenkolab/Baysor.git /opt/baysor-src
+  echo '# Build disabled to avoid PackageCompiler OOM' > /opt/baysor-src/deps/build.jl
+  echo 'println("Baysor build.jl skipped (sysimage not created)")' >> /opt/baysor-src/deps/build.jl
+
+  julia -e '
+    using Pkg
+    Pkg.develop(PackageSpec(path="/opt/baysor-src"))
+    println("Baysor package installed successfully")
+  '
+
+  julia -e 'using Baysor; println("Baysor loaded OK: ", pkgdir(Baysor))'
+  julia -e 'using Pkg; Pkg.precompile(); println("Baysor precompiled OK")'
+
+  mkdir -p /opt/baysor/bin
+  cat > /opt/baysor/bin/baysor << 'BAYSOR_WRAPPER'
+#!/opt/julia/bin/julia
+import Baysor
+Baysor.command_main()
+BAYSOR_WRAPPER
+  chmod +x /opt/baysor/bin/baysor
+
+  /opt/baysor/bin/baysor --help || echo "NOTE: baysor first run compiles; --help may be slow"
+
+  # ================================================================
+  # 6b. MESMER — deepcell-tf in its OWN conda env
+  # ================================================================
+  # deepcell pins tensorflow~=2.8, which conflicts with the main env's
+  # tensorflow-cpu>=2.13 (StarDist). An isolated env keeps both working and
+  # sets the pattern for future methods with incompatible stacks: one
+  # container, multiple envs, main env stays the aggregation/QC hub.
+  # NOTE: TF 2.8 expects CUDA 11.2; this image ships CUDA 12.4 for torch,
+  # so Mesmer runs CPU-only for now.
+  mamba create -y -n mesmer_env python=3.10 pip
+  MESMER_PYTHON=/opt/miniforge3/envs/mesmer_env/bin/python
+  MESMER_PIP=/opt/miniforge3/envs/mesmer_env/bin/pip
+  $MESMER_PIP install deepcell \
+    || echo "WARNING: deepcell install failed — Mesmer unavailable (coming-soon method, build continues)"
+
+  # Pre-cache Mesmer (MultiplexSegmentation) weights. Download requires a
+  # DeepCell access token (users.deepcell.org) and compute nodes have no
+  # internet, so the weights must be baked in here. deepcell caches under
+  # ~/.deepcell — redirect HOME so the cache lands at a fixed image path.
+  if [ -f /deepcell_token.txt ]; then
+    export DEEPCELL_ACCESS_TOKEN="$(cat /deepcell_token.txt)"
+    mkdir -p /opt/deepcell_home
+    HOME=/opt/deepcell_home $MESMER_PYTHON -c "
+from deepcell.applications import Mesmer
+print('Pre-caching Mesmer MultiplexSegmentation weights...')
+Mesmer()
+print('Mesmer weights cached OK')
+"
+    chmod -R a+rX /opt/deepcell_home
+    echo "Mesmer cache contents:"
+    find /opt/deepcell_home -maxdepth 4 | head -20
+    rm /deepcell_token.txt
+    unset DEEPCELL_ACCESS_TOKEN
+  else
+    echo "WARNING: deepcell_token.txt not provided — Mesmer weights NOT baked in."
+    echo "         Mesmer will fail on offline compute nodes until rebuilt with a token."
+  fi
+
+  # ================================================================
+  # 7. ENVIRONMENT VARIABLES (persisted into container runtime)
+  # ================================================================
+  # ORDER MATTERS: these lines execute top-to-bottom at container startup and
+  # each PATH export PREPENDS. Base conda (/opt/miniforge3/bin) must come
+  # BEFORE `conda activate` so the activated env's bin ends up in front of it —
+  # otherwise bare `python` resolves to base conda, which has none of the
+  # segmentation packages (the historical python_bin trap in site.yaml).
+  echo "export PATH=/opt/miniforge3/bin:\${PATH}" >> $SINGULARITY_ENVIRONMENT
+  echo ". /opt/miniforge3/etc/profile.d/conda.sh" >> $SINGULARITY_ENVIRONMENT
+  echo "conda activate spatial_segmentation_env" >> $SINGULARITY_ENVIRONMENT
+  echo "export RUSTUP_HOME=/opt/rustup" >> $SINGULARITY_ENVIRONMENT
+  echo "export CARGO_HOME=/opt/cargo" >> $SINGULARITY_ENVIRONMENT
+  echo "export PATH=/opt/cargo/bin:\${PATH}" >> $SINGULARITY_ENVIRONMENT
+  echo "export PATH=/opt/julia/bin:\${PATH}" >> $SINGULARITY_ENVIRONMENT
+  echo "export PATH=/opt/baysor/bin:\${PATH}" >> $SINGULARITY_ENVIRONMENT
+  echo "export JULIA_DEPOT_PATH=\${HOME}/.julia:/root/.julia" >> $SINGULARITY_ENVIRONMENT
+  echo "export CELLPOSE_LOCAL_MODELS_PATH=/opt/cellpose_models" >> $SINGULARITY_ENVIRONMENT
+  echo "export CSBDEEP_CACHE_DIR=/opt/stardist_models" >> $SINGULARITY_ENVIRONMENT
+  # Mesmer: interpreter for the isolated env + baked-in weights location
+  # (run_mesmer.py uses these instead of relying on ~/.deepcell)
+  echo "export MESMER_PYTHON=/opt/miniforge3/envs/mesmer_env/bin/python" >> $SINGULARITY_ENVIRONMENT
+  echo "export MESMER_MODEL_DIR=/opt/deepcell_home/.deepcell/models" >> $SINGULARITY_ENVIRONMENT
+  echo "alias ll='ls -l --color=auto'" >> $SINGULARITY_ENVIRONMENT
+  echo "alias ls='ls --color=auto'" >> $SINGULARITY_ENVIRONMENT
+
+  # ================================================================
+  # 8. VERIFY INSTALLATIONS
+  # ================================================================
+  echo ""
+  echo "========================================"
+  echo "  BUILD VERIFICATION"
+  echo "========================================"
+  echo "Python:  $(python --version 2>&1)"
+  echo "Mamba:   $(mamba --version 2>&1 | head -1)"
+  echo "R:       $(Rscript -e 'cat(R.version.string)' 2>&1)"
+  echo "Rust:    $(rustc --version 2>&1)"
+  echo "Cargo:   $(cargo --version 2>&1)"
+  echo "Julia:   $(julia --version 2>&1)"
+  echo "ProSeg:  $(which proseg 2>&1)"
+  echo "Baysor:  $(ls -la /opt/baysor/bin/baysor 2>&1)"
+  echo ""
+  # Core components (supported wizard-selectable methods + their stack) append
+  # to FAILURES and abort the build at the end. Coming-soon / GPU-only extras
+  # (bidcell, Bering, Segger, cuDF, Mesmer) warn only — a CPU build node
+  # legitimately can't verify some of them.
+  FAILURES=""
+  $ENV_PYTHON -c "import sopa; print(f'sopa:        {sopa.__version__}')" || FAILURES="$FAILURES sopa"
+  $ENV_PYTHON -c "import scanpy; print(f'scanpy:      {scanpy.__version__}')" || FAILURES="$FAILURES scanpy"
+  $ENV_PYTHON -c "import squidpy; print(f'squidpy:     {squidpy.__version__}')" || FAILURES="$FAILURES squidpy"
+  $ENV_PYTHON -c "import torch; print(f'PyTorch:     {torch.__version__}  CUDA: {torch.cuda.is_available()}')" || FAILURES="$FAILURES torch"
+  $ENV_PYTHON -c "import cellpose; from cellpose import models; m=models.CellposeModel(pretrained_model='cpsam', gpu=False); print(f'cellpose:    {cellpose.__version__} (CPSAM cached OK)')" || FAILURES="$FAILURES cellpose/CPSAM"
+  $ENV_PYTHON -c "import spatialdata; print(f'spatialdata: {spatialdata.__version__}')" || FAILURES="$FAILURES spatialdata"
+  $ENV_PYTHON -c "import bidcell; print('bidcell:     OK')" || echo "WARN: bidcell missing (coming soon)"
+  $ENV_PYTHON -c "import Bering; print('Bering:      OK')" || echo "WARN: Bering missing (coming soon)"
+  $ENV_PYTHON -c "import segger; print('Segger:      OK')" || echo "WARN: Segger missing (coming soon)"
+  $ENV_PYTHON -c "
+import os, stardist
+os.environ['CSBDEEP_CACHE_DIR'] = '/opt/stardist_models'
+from stardist.models import StarDist2D
+m = StarDist2D.from_pretrained('2D_versatile_fluo')
+print(f'stardist:    {stardist.__version__} (2D_versatile_fluo cached OK)')
+" || FAILURES="$FAILURES stardist/model"
+  $ENV_PYTHON -c "import comseg; print('comseg:      OK')" || FAILURES="$FAILURES comseg"
+  $ENV_PYTHON -c "import cudf; print(f'cuDF:        {cudf.__version__}')" || echo "WARN: cuDF (RAPIDS) missing — expected on CPU build nodes"
+  $ENV_PYTHON -c "import numpy; print(f'numpy:       {numpy.__version__}')" || FAILURES="$FAILURES numpy"
+  $ENV_PYTHON -c "import xgboost; print(f'xgboost:     {xgboost.__version__}')" || FAILURES="$FAILURES xgboost"
+  $ENV_PYTHON -c "import sklearn; print(f'sklearn:     {sklearn.__version__}')" || FAILURES="$FAILURES sklearn"
+  $MESMER_PYTHON -c "import deepcell; print(f'deepcell:    {deepcell.__version__} (mesmer_env)')" || echo "WARN: deepcell missing (Mesmer coming soon)"
+  [ -x /opt/cargo/bin/proseg ] || FAILURES="$FAILURES proseg"
+  [ -x /opt/baysor/bin/baysor ] || FAILURES="$FAILURES baysor"
+  Rscript -e 'cat("sf:         ", as.character(packageVersion("sf")), "\n")' || FAILURES="$FAILURES r-sf"
+  Rscript -e 'cat("FastReseg:  ", as.character(packageVersion("FastReseg")), "\n")' || FAILURES="$FAILURES FastReseg"
+  Rscript -e 'cat("CellSPA:    ", as.character(packageVersion("CellSPA")), "\n")' || FAILURES="$FAILURES CellSPA"
+  Rscript -e 'cat("patchwork:  ", as.character(packageVersion("patchwork")), "\n")' || FAILURES="$FAILURES patchwork"
+
+  if [ -n "$FAILURES" ]; then
+    echo "========================================"
+    echo "  BUILD FAILED — missing core components:$FAILURES"
+    echo "========================================"
+    exit 1
+  fi
+  echo "========================================"
+  echo "  BUILD COMPLETE — all core components verified"
+  echo "========================================"
+
+%test
+  ENV_PYTHON=/opt/miniforge3/envs/spatial_segmentation_env/bin/python
+  MESMER_PYTHON=/opt/miniforge3/envs/mesmer_env/bin/python
+  $ENV_PYTHON -c "import sopa; import scanpy; import squidpy; import torch; import xgboost; import sklearn; import stardist; import comseg; print('Python imports OK')"
+  $ENV_PYTHON -c "import cellpose; from cellpose import models; models.CellposeModel(pretrained_model='cpsam', gpu=False); print('cellpose + CPSAM model OK')"
+  $ENV_PYTHON -c "
+import os
+os.environ['CSBDEEP_CACHE_DIR'] = '/opt/stardist_models'
+from stardist.models import StarDist2D
+StarDist2D.from_pretrained('2D_versatile_fluo')
+print('stardist model OK')
+"
+  $ENV_PYTHON -c "import Bering; print('Bering OK')" || echo "NOTE: Bering not installed (coming soon)"
+  $ENV_PYTHON -c "import segger; print('segger OK')" || echo "NOTE: segger not installed (coming soon)"
+  $MESMER_PYTHON -c "import deepcell; print('deepcell OK (mesmer_env)')" || echo "NOTE: deepcell not installed (Mesmer coming soon)"
+  Rscript -e 'library(sf); library(FastReseg); library(CellSPA); library(patchwork); cat("R imports OK\n")'
+  /opt/cargo/bin/proseg --help > /dev/null 2>&1 && echo "proseg found" || echo "proseg NOT found"
+  /opt/baysor/bin/baysor --help > /dev/null 2>&1 && echo "baysor found" || echo "baysor NOT found"
+  echo "smoke test passed"
+
+%help
+  Spatial Segmentation Container
+  ==================================
+  Contains: SOPA, ProSeg, Baysor, BIDCell, Cellpose, FastReseg, Bering, Segger, StarDist, ComSeg, Mesmer, CellSPA, patchwork, XGBoost classifier
+
+  Conda environments:
+    - spatial_segmentation_env: main env — segmentation methods, QC, aggregation
+    - mesmer_env:               deepcell-tf / Mesmer (isolated: TF 2.8 pin)
+
+  Segmentation tools:
+    - SOPA:       Python orchestration + QC
+    - ProSeg:     Rust-based probabilistic segmentation
+    - Baysor:     Julia-based Bayesian segmentation
+    - BIDCell:    Deep learning segmentation (PyTorch)
+    - Cellpose:   Neural network segmentation
+    - FastReseg:  R-based post-hoc segmentation refinement
+    - Bering:     Graph neural network segmentation (GPU)
+    - Segger:     Graph neural network segmentation with RAPIDS (GPU)
+    - StarDist:   Star-convex polygon segmentation (tensorflow-cpu)
+    - ComSeg:     Combinatorial transcript-based segmentation
+    - Mesmer:     DeepCell whole-cell segmentation (mesmer_env, CPU for now)
+
+  Annotation tools:
+    - XGBoost:    Rank-gene cell type classifier (CPU + CUDA GPU)
+
+  Also includes: scanpy, squidpy, spatialdata, PyTorch+CUDA, JupyterLab, R+sf+terra
+
+  Usage examples:
+    singularity shell --nv container.sif
+    singularity exec --nv container.sif jupyter lab --no-browser --port=8888
+    singularity exec --nv container.sif python my_script.py
+    singularity exec container.sif proseg --xenium --help
+    singularity exec container.sif baysor --help
+    singularity exec container.sif Rscript -e 'library(FastReseg)'
+
+  Note: Use --nv flag for GPU support (requires nvidia-container-cli)
+  Note: StarDist uses tensorflow-cpu; PyTorch GPU unaffected

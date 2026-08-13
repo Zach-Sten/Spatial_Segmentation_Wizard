@@ -1,0 +1,96 @@
+name: spatial_segmentation_env
+channels:
+  - nvidia
+  - conda-forge
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - setuptools<81
+  - wheel
+
+  # ── Core spatial / single-cell stack ──
+  # (torch moved to the pip section: the validated seg_sin_v8 image has pip
+  # torch 2.5.1+cu121, not conda pytorch-cuda=12.4 — pin what actually works)
+  - scanpy=1.11.5
+  - squidpy
+  - anndata=0.11.4
+  - numpy=1.26.4
+  - scipy
+  - pandas
+  - libstdcxx-ng>=12
+  - scikit-learn
+  - scikit-image
+  - matplotlib
+  - seaborn
+  - h5py
+  - anndata
+
+  - dask
+
+  # ── Utilities ──
+  - jupyterlab
+  - ipykernel
+  - pyyaml
+  - tqdm
+  - click
+  - rich
+  - toml
+  - loompy
+  - imagecodecs
+  - tifffile
+
+  # ── System / build deps sometimes needed ──
+  - libgl
+  - opencv
+
+  # ── R + spatial packages (conda-forge bundles modern GDAL/GEOS/PROJ) ──
+  - r-base
+  - r-sf
+  - r-lwgeom
+  - r-terra
+  - r-igraph
+  - r-concaveman
+  - r-devtools
+  - r-remotes
+  - r-biocmanager
+  - r-data.table
+  - r-dplyr
+  - r-ggplot2
+  - r-reshape2
+  - r-e1071
+  - r-dbscan
+  - r-lmtest
+  - r-spatstat.geom
+  - r-geometry
+  - r-magick
+  - r-v8
+  - r-rcpp
+  - r-matrix
+
+  # ── pip-only packages ──
+  # Versions pinned 2026-08-13 from the validated seg_sin_v8.sif (pip list).
+  - pip:
+      # PyTorch — pip wheels bundle the CUDA 12.1 runtime libs
+      - torch==2.5.1
+      - torchvision==0.20.1
+      - torchaudio==2.5.1
+      # SOPA with cellpose + baysor extras
+      - sopa[cellpose,baysor]==2.1.11
+      # Spatial data ecosystem
+      - spatialdata==0.5.0
+      - setuptools<81
+      - spatialdata-io==0.3.0
+      - spatialdata-plot==0.2.12
+      # BIDCell (deep learning segmentation)
+      - bidcell==1.0.3
+      # Additional segmentation deps
+      - cellpose==4.1.1
+      - segmentation-models-pytorch==0.5.0
+      # Bering (graph neural network segmentation)
+      - Bering==0.1.2
+      # Cell type classifier
+      # GPU support included — uses device='cuda' when --gpu flag is set.
+      # Requires CUDA at runtime (bundled with the pip torch wheels).
+      - xgboost==3.2.0
