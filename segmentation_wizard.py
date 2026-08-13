@@ -572,7 +572,7 @@ def wizard():
     # ── Output ──
     section("Output")
     print(f"  {DIM}Leave blank to place results in experiment directory{RESET}")
-    override = prompt("Output path", default="", required=False)
+    override = path_prompt("Output path", required=False)
     cfg["paths"]["output_base_override"] = override
 
     # ── Methods ──

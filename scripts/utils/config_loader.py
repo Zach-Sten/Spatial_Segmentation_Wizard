@@ -339,8 +339,16 @@ def get_method_config(cfg: dict, method: str) -> dict:
 
 
 def get_output_base_override(cfg: dict) -> str:
-    """Get the output base override path (empty string = use default layout)."""
-    return cfg.get("paths", {}).get("output_base_override", "") or ""
+    """Get the output base override path, resolved to absolute (empty = default layout).
+
+    Must be absolute: it becomes an Apptainer --bind destination, and relative
+    bind destinations are a FATAL at container startup. The wizard resolves at
+    prompt time; this guards hand-edited configs.
+    """
+    v = cfg.get("paths", {}).get("output_base_override", "") or ""
+    if v:
+        v = str(Path(os.path.expanduser(v)).resolve())
+    return v
 
 
 def get_container_path(cfg: dict) -> str:
