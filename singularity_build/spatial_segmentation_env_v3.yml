@@ -72,10 +72,12 @@ dependencies:
   # ── pip-only packages ──
   # Versions pinned 2026-08-13 from the validated seg_sin_v8.sif (pip list).
   - pip:
-      # PyTorch — pip wheels bundle the CUDA 12.1 runtime libs
-      - torch==2.5.1
-      - torchvision==0.20.1
-      - torchaudio==2.5.1
+      # PyTorch — explicit cu121 wheels (PyPI's default 2.5.1 is +cu124;
+      # the validated v8 image is +cu121, matching the cluster GPU driver)
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch==2.5.1+cu121
+      - torchvision==0.20.1+cu121
+      - torchaudio==2.5.1+cu121
       # SOPA with cellpose + baysor extras
       - sopa[cellpose,baysor]==2.1.11
       # Spatial data ecosystem

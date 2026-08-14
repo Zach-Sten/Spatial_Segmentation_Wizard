@@ -335,9 +335,11 @@ BAYSOR_WRAPPER
   SEGGER_PYTHON=/opt/miniforge3/envs/segger_env/bin/python
   SEGGER_PIP=/opt/miniforge3/envs/segger_env/bin/pip
 
-  # torch pinned to the validated main-env combo (pip wheels bundle CUDA 12.1
-  # runtime libs — matches seg_sin_v8's torch 2.5.1+cu121)
-  $SEGGER_PIP install torch==2.5.1 torchvision==0.20.1 \
+  # torch pinned to the validated main-env combo — explicit cu121 wheels
+  # (PyPI's default 2.5.1 is +cu124, which would mismatch the cu121
+  # torch_scatter wheels below and the cluster GPU driver)
+  $SEGGER_PIP install torch==2.5.1+cu121 torchvision==0.20.1+cu121 \
+    --extra-index-url https://download.pytorch.org/whl/cu121 \
     || echo "WARNING: segger_env torch install failed — Segger unavailable"
 
   # torch_scatter — PyG wheel index, must match torch+CUDA exactly
@@ -517,7 +519,14 @@ PYEOF
   $ENV_PYTHON -c "import scanpy; print(f'scanpy:      {scanpy.__version__}')" || FAILURES="$FAILURES scanpy"
   $ENV_PYTHON -c "import squidpy; print(f'squidpy:     {squidpy.__version__}')" || FAILURES="$FAILURES squidpy"
   $ENV_PYTHON -c "import torch; print(f'PyTorch:     {torch.__version__}  CUDA: {torch.cuda.is_available()}')" || FAILURES="$FAILURES torch"
-  $ENV_PYTHON -c "import cellpose; from cellpose import models; m=models.CellposeModel(pretrained_model='cpsam', gpu=False); print(f'cellpose:    {cellpose.__version__} (CPSAM cached OK)')" || FAILURES="$FAILURES cellpose/CPSAM"
+  $ENV_PYTHON -c "
+import os
+os.environ['CELLPOSE_LOCAL_MODELS_PATH'] = '/opt/cellpose_models'
+from importlib.metadata import version as _v
+from cellpose import models
+models.CellposeModel(pretrained_model='cpsam', gpu=False)
+print('cellpose:    ' + _v('cellpose') + ' (CPSAM cached OK)')
+" || FAILURES="$FAILURES cellpose/CPSAM"
   $ENV_PYTHON -c "import spatialdata; print(f'spatialdata: {spatialdata.__version__}')" || FAILURES="$FAILURES spatialdata"
   $ENV_PYTHON -c "import bidcell; print('bidcell:     OK')" || echo "WARN: bidcell missing (coming soon)"
   $ENV_PYTHON -c "import Bering; print('Bering:      OK')" || echo "WARN: Bering missing (coming soon)"
@@ -555,7 +564,13 @@ PYEOF
   SEGGER_PYTHON=/opt/miniforge3/envs/segger_env/bin/python
   MESMER_PYTHON=/opt/miniforge3/envs/mesmer_env/bin/python
   $ENV_PYTHON -c "import sopa; import scanpy; import squidpy; import torch; import xgboost; import sklearn; import comseg; print('Python imports OK')"
-  $ENV_PYTHON -c "import cellpose; from cellpose import models; models.CellposeModel(pretrained_model='cpsam', gpu=False); print('cellpose + CPSAM model OK')"
+  $ENV_PYTHON -c "
+import os
+os.environ['CELLPOSE_LOCAL_MODELS_PATH'] = '/opt/cellpose_models'
+from cellpose import models
+models.CellposeModel(pretrained_model='cpsam', gpu=False)
+print('cellpose + CPSAM model OK')
+"
   [ -f /opt/stardist_models/models/StarDist2D/2D_versatile_fluo/config.json ] && echo "stardist models staged OK"
   $ENV_PYTHON -c "import stardist; print('stardist import OK')" || echo "NOTE: stardist/TF import failed — old build-node CPU; verify on a compute node"
   $ENV_PYTHON -c "import Bering; print('Bering OK')" || echo "NOTE: Bering not installed (coming soon)"

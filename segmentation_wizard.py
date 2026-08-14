@@ -191,95 +191,6 @@ def prompt_multi(label, options, defaults=None, marked=None, coming_soon=()):
     return selected if selected else defaults
 
 
-def ensure_stardist_models(seg_models_dir: Path) -> str:
-    """Download StarDist pretrained models directly (no container needed).
-
-    csbdeep calls keras get_file with cache_subdir='models/StarDist2D', so the
-    required on-disk layout (relative to CSBDEEP_CACHE_DIR = seg_models_dir) is:
-        models/StarDist2D/{model_name}.zip   ← zip KEPT for keras hash validation
-        models/StarDist2D/{model_name}/      ← extracted model weights
-
-    If keras cannot find the zip (or hash mismatches), it tries to download at
-    job time — which fails on compute nodes with no internet access.
-
-    This function also migrates models that a previous run placed at the old
-    (incorrect) location models/{model_name}/.
-
-    Returns the path to use as CSBDEEP_CACHE_DIR, or raises SystemExit with a
-    clear message if the download fails (e.g. no internet on this node).
-    """
-    import urllib.request
-    import zipfile
-    import shutil
-
-    STARDIST_MODELS = {
-        "2D_versatile_fluo": "https://github.com/stardist/stardist-models/releases/download/v0.1/python_2D_versatile_fluo.zip",
-        "2D_versatile_he":   "https://github.com/stardist/stardist-models/releases/download/v0.1/python_2D_versatile_he.zip",
-    }
-
-    models_dir = seg_models_dir / "models" / "StarDist2D"
-    models_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"\n  {BOLD}StarDist model setup{RESET}")
-    print(f"  {DIM}Cache: {models_dir}{RESET}")
-    print(f"  {DIM}(Only needed once — subsequent runs reuse cached models){RESET}\n")
-
-    for model_name, url in STARDIST_MODELS.items():
-        zip_path = models_dir / f"{model_name}.zip"
-        model_dir = models_dir / model_name
-
-        # --- migrate models placed at wrong path by older wizard versions ---
-        old_model_dir = seg_models_dir / "models" / model_name
-        if old_model_dir.exists():
-            print(f"  Migrating {model_name} to correct cache path...", end="", flush=True)
-            shutil.move(str(old_model_dir), str(model_dir))
-            print(f" {CHECK}")
-
-        # Both zip (for keras hash check) and extracted dir must be present.
-        if zip_path.exists() and model_dir.exists() and any(model_dir.iterdir()):
-            print(f"  {CHECK} {model_name}: already cached")
-            continue
-
-        # Download zip (or re-download if it was previously deleted).
-        print(f"  Downloading {BOLD}{model_name}{RESET}...")
-
-        try:
-            def _progress(count, block_size, total_size):
-                if total_size <= 0:
-                    return
-                pct = min(int(count * block_size * 100 / total_size), 100)
-                filled = pct // 2
-                bar = "█" * filled + "░" * (50 - filled)
-                print(f"\r  [{bar}] {pct}%", end="", flush=True)
-
-            urllib.request.urlretrieve(url, zip_path, reporthook=_progress)
-            print()  # newline after progress bar
-
-        except Exception as e:
-            print(f"\n  {RED}{BOLD}Download failed:{RESET} {e}")
-            print(f"  {YELLOW}Run the wizard from a node with internet access.{RESET}")
-            if zip_path.exists():
-                zip_path.unlink()
-            sys.exit(1)
-
-        print(f"  Extracting {model_name}...", end="", flush=True)
-        with zipfile.ZipFile(zip_path, "r") as z:
-            top_dirs = {Path(n).parts[0] for n in z.namelist()}
-            if len(top_dirs) == 1 and list(top_dirs)[0] == model_name:
-                # Zip has model_name/ at root — extract directly into models_dir
-                z.extractall(models_dir)
-            else:
-                # Flat zip — wrap in model_name/ subdirectory
-                model_dir.mkdir(exist_ok=True)
-                z.extractall(model_dir)
-        # Do NOT delete the zip — keras checks its hash on every run to avoid
-        # re-downloading. Without it the compute node (no internet) will fail.
-        print(f" {CHECK}")
-
-    print(f"\n  {CHECK} StarDist models ready: {BOLD}{seg_models_dir}{RESET}")
-    return str(seg_models_dir)
-
-
 def path_prompt(label, default=None, must_exist=False, required=True):
     """Prompt for a file/directory path with tab completion."""
     try:
@@ -630,12 +541,11 @@ def wizard():
         else:
             _print_default_settings(selected, METHOD_DEFAULTS)
 
-    # Download StarDist models on first use. Not a setting — the compute nodes
-    # have no internet, so the cache must be populated from here either way.
-    if "stardist" in selected:
-        seg_models_dir = Path(os.getcwd()) / "seg_models"
-        stardist_cache = ensure_stardist_models(seg_models_dir)
-        cfg["data"]["seg_models_path"] = stardist_cache
+    # StarDist pretrained models are baked into the container image
+    # (STARDIST_MODELS_DIR); run_stardist.py stages them from there at job
+    # time. Set data.seg_models_path in the config by hand only to override
+    # with custom models (or when using a pre-multienv image without baked
+    # models).
 
     for method in all_methods:
         enabled = method in selected

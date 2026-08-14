@@ -193,10 +193,20 @@ def main():
     # csbdeep passes no cache_dir to keras, so workers always look in ~/.keras.
     # Home dir is always mounted by Singularity and shared by every spawned
     # worker process — the only path that reliably survives dask-nanny spawn.
+    # Source priority: explicit seg_models_path (custom/override models), else
+    # the pretrained models baked into the container image (STARDIST_MODELS_DIR,
+    # exported by the container runtime environment).
     seg_models_path = cfg.get("data", {}).get("seg_models_path", "")
+    src_base = None
     if seg_models_path:
-        candidate = Path(seg_models_path) / "models" / "StarDist2D" / model_type
+        src_base = Path(seg_models_path)
         print(f"[INFO] seg_models_path: {seg_models_path}")
+    elif os.environ.get("STARDIST_MODELS_DIR"):
+        src_base = Path(os.environ["STARDIST_MODELS_DIR"])
+        print(f"[INFO] Using models baked into the container: {src_base}")
+
+    if src_base is not None:
+        candidate = src_base / "models" / "StarDist2D" / model_type
         print(f"[INFO] Source model dir: {candidate}  exists={candidate.is_dir()}")
         if candidate.is_dir():
             _stage_model_for_keras(model_type, candidate)
@@ -204,7 +214,8 @@ def main():
         else:
             print(f"[WARN] Source model dir not found — workers will attempt download (will fail on compute nodes)")
     else:
-        print(f"[WARN] seg_models_path not set in config — workers will attempt download (will fail on compute nodes)")
+        print(f"[WARN] No model source: seg_models_path not set and STARDIST_MODELS_DIR not in "
+              f"container env (pre-multienv image?) — workers will attempt download (will fail on compute nodes)")
 
     cpus = configure_threads()
     configure_dask(cpus)
