@@ -296,8 +296,10 @@ PYEOF
   rm /tmp/julia.tar.gz
   export PATH=/opt/julia/bin:${PATH}
 
-  # Clone Baysor and disable PackageCompiler build (OOM on low-RAM nodes)
-  git clone https://github.com/kharchenkolab/Baysor.git /opt/baysor-src
+  # Clone Baysor and disable PackageCompiler build (OOM on low-RAM nodes).
+  # PINNED to v0.7.1 — the last Julia release. Baysor master was rewritten in
+  # C++ (CMake, src/, no Project.toml), which breaks this entire install flow.
+  git clone --branch v0.7.1 --depth 1 https://github.com/kharchenkolab/Baysor.git /opt/baysor-src
   echo '# Build disabled to avoid PackageCompiler OOM' > /opt/baysor-src/deps/build.jl
   echo 'println("Baysor build.jl skipped (sysimage not created)")' >> /opt/baysor-src/deps/build.jl
 
