@@ -350,17 +350,37 @@ BAYSOR_WRAPPER
     --extra-index-url https://download.pytorch.org/whl/cu121 \
     || echo "WARNING: segger_env torch install failed — Segger unavailable"
 
-  # torch_scatter — PyG wheel index, must match torch+CUDA exactly
-  $SEGGER_PIP install torch_scatter -f https://data.pyg.org/whl/torch-2.5.1+cu121.html \
-    || echo "WARNING: torch_scatter install failed — Segger may not work"
+  # PyG stack — torch_scatter/torch_sparse from the wheel index (must match
+  # torch+CUDA exactly), torch_geometric from plain PyPI. segger's own
+  # pyproject.toml doesn't declare ANY of torch/torch_geometric/torch_scatter
+  # (common for GPU packages — too environment-specific to pin generically),
+  # but its environment_cuda121.yml documents the actual required set; a bare
+  # `import segger` crashes at `_patches.py`'s `import torch_geometric...`
+  # without this. Versions unpinned here because segger's own yml lists them
+  # unpinned too.
+  $SEGGER_PIP install torch_scatter torch_sparse torch_geometric \
+    -f https://data.pyg.org/whl/torch-2.5.1+cu121.html \
+    || echo "WARNING: PyG stack install failed — Segger may not work"
 
-  # RAPIDS (cuDF/cuML/cuGraph) — required by Segger
+  # lightning (PyTorch Lightning) — also required per segger's documented
+  # environment, unpinned there too
+  $SEGGER_PIP install lightning \
+    || echo "WARNING: lightning install failed — Segger may not work"
+
+  # RAPIDS (cuDF/cuML/cuGraph/cuSpatial) — required by Segger
   $SEGGER_PIP install \
     cudf-cu12==24.10.1 \
     cuml-cu12==24.10.0 \
     cugraph-cu12==24.10.0 \
+    cuspatial-cu12==24.10.0 \
     --extra-index-url=https://pypi.nvidia.com \
     || echo "WARNING: RAPIDS install failed — Segger GPU features may not work"
+
+  # cupy — segger's environment_cuda121.yml caps this at <13.0 explicitly
+  # (a later CuPy major evidently broke something on their end); PyPI's
+  # unpinned default is 14.x, so this constraint matters, not cosmetic.
+  $SEGGER_PIP install "cupy-cuda12x>=12.2,<13.0" \
+    || echo "WARNING: cupy install failed — Segger may not work"
 
   # Patch cudf/__init__.py to wrap validate_setup() in a try/except so CPU-only
   # nodes don't crash on "import cudf". Patching the call site in __init__.py is
