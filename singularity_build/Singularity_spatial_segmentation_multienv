@@ -303,18 +303,23 @@ PYEOF
   echo '# Build disabled to avoid PackageCompiler OOM' > /opt/baysor-src/deps/build.jl
   echo 'println("Baysor build.jl skipped (sysimage not created)")' >> /opt/baysor-src/deps/build.jl
 
-  julia -e '
+  # Instantiate from Baysor's own checked-in Manifest.toml — the exact dep
+  # versions the v0.7.1 release was tested with. (Pkg.develop into the root
+  # env resolves deps fresh from the registry at build time instead: a Makie
+  # release between two otherwise-identical builds broke CairoMakie pkgimage
+  # linking, 2026-08-14.)
+  julia --project=/opt/baysor-src -e '
     using Pkg
-    Pkg.develop(PackageSpec(path="/opt/baysor-src"))
-    println("Baysor package installed successfully")
+    Pkg.instantiate()
+    Pkg.precompile()
+    println("Baysor instantiated from its Manifest")
   '
 
-  julia -e 'using Baysor; println("Baysor loaded OK: ", pkgdir(Baysor))'
-  julia -e 'using Pkg; Pkg.precompile(); println("Baysor precompiled OK")'
+  julia --project=/opt/baysor-src -e 'using Baysor; println("Baysor loaded OK: ", pkgdir(Baysor))'
 
   mkdir -p /opt/baysor/bin
   cat > /opt/baysor/bin/baysor << 'BAYSOR_WRAPPER'
-#!/opt/julia/bin/julia
+#!/opt/julia/bin/julia --project=/opt/baysor-src
 import Baysor
 Baysor.command_main()
 BAYSOR_WRAPPER
