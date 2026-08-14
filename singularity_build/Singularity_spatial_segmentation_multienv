@@ -335,7 +335,10 @@ BAYSOR_WRAPPER
   # and the cudf CPU-node patch. Isolating it means the main env never has to
   # care. Everything here is soft-guarded — Segger is a coming-soon method and
   # CPU build nodes legitimately can't verify the GPU pieces.
-  mamba create -y -n segger_env -c conda-forge python=3.10 pip "setuptools<81" wheel \
+  # Segger's pyproject.toml declares requires-python = ">=3.11" (no clean
+  # release tag exists to pin against — only messy backup/* branch tags — so
+  # this stays an unpinned `main` clone, same risk class Baysor had).
+  mamba create -y -n segger_env -c conda-forge python=3.11 pip "setuptools<81" wheel \
     || echo "WARNING: segger_env creation failed — Segger unavailable"
   SEGGER_PYTHON=/opt/miniforge3/envs/segger_env/bin/python
   SEGGER_PIP=/opt/miniforge3/envs/segger_env/bin/pip
@@ -408,11 +411,17 @@ PYEOF
   # ================================================================
   # 6c. MESMER — deepcell-tf in its OWN conda env
   # ================================================================
-  # deepcell pins tensorflow~=2.8, which conflicts with the main env's
-  # tensorflow-cpu>=2.13 (StarDist). An isolated env keeps both working.
-  # NOTE: TF 2.8 expects CUDA 11.2; this image ships CUDA 12.4 for torch,
-  # so Mesmer runs CPU-only for now.
-  mamba create -y -n mesmer_env python=3.10 pip
+  # deepcell pins tensorflow~=2.8.0 (confirmed via its requirements.txt at
+  # tag 0.12.10), which conflicts with the main env's tensorflow-cpu>=2.13
+  # (StarDist). An isolated env keeps both working.
+  # GPU support (2026-08-14): TF 2.8's own compatibility matrix wants CUDA
+  # 11.2 + cuDNN 8.1 — confirmed by the exact "libcudart.so.11.0" /
+  # "libcudnn.so.8" dlerror names seen when this env had no matching CUDA
+  # libs. This image's main env ships CUDA 12.4 (for torch), so those 11.2
+  # libs are installed HERE, isolated to mesmer_env, via conda (TF's pip
+  # wheels don't bundle their own CUDA runtime the way torch's do).
+  mamba create -y -n mesmer_env -c conda-forge -c nvidia \
+    python=3.10 pip cudatoolkit=11.2 cudnn=8.1.0
   MESMER_PYTHON=/opt/miniforge3/envs/mesmer_env/bin/python
   MESMER_PIP=/opt/miniforge3/envs/mesmer_env/bin/pip
   $MESMER_PIP install deepcell \
@@ -495,6 +504,13 @@ PYEOF
   echo "export MESMER_PYTHON=/opt/miniforge3/envs/mesmer_env/bin/python" >> $SINGULARITY_ENVIRONMENT
   # Mesmer baked-in weights location (run_mesmer.py uses this instead of ~/.deepcell)
   echo "export MESMER_MODEL_DIR=/opt/deepcell_home/.deepcell/models" >> $SINGULARITY_ENVIRONMENT
+  # TF's pip wheel dlopen's CUDA/cuDNN via LD_LIBRARY_PATH, not rpath, and
+  # mesmer_env's conda-installed cudatoolkit=11.2/cudnn=8.1 land in its own
+  # $CONDA_PREFIX/lib — invisible unless added explicitly. Scoped to its own
+  # var (not the global LD_LIBRARY_PATH) so it can't shadow the main env's
+  # CUDA 12.x libs for torch. run_mesmer.py must prepend this to
+  # LD_LIBRARY_PATH before invoking $MESMER_PYTHON as a subprocess.
+  echo "export MESMER_LD_LIBRARY_PATH=/opt/miniforge3/envs/mesmer_env/lib" >> $SINGULARITY_ENVIRONMENT
   echo "alias ll='ls -l --color=auto'" >> $SINGULARITY_ENVIRONMENT
   echo "alias ls='ls --color=auto'" >> $SINGULARITY_ENVIRONMENT
 
