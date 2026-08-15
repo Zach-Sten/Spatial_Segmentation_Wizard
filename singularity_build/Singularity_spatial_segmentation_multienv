@@ -530,6 +530,21 @@ PYEOF
   # these instead of hardcoding paths. Main env stays the default python.
   echo "export MAIN_ENV_PYTHON=/opt/miniforge3/envs/spatial_segmentation_env/bin/python" >> $SINGULARITY_ENVIRONMENT
   echo "export SEGGER_PYTHON=/opt/miniforge3/envs/segger_env/bin/python" >> $SINGULARITY_ENVIRONMENT
+  # CuPy (segger's dependency) dlopens the CUDA 12.x runtime via
+  # LD_LIBRARY_PATH, not rpath. The runtime IS already present in
+  # segger_env — bundled via torch's pip nvidia-*-cu12 packages — just
+  # nested under site-packages rather than a normal library path.
+  # Confirmed necessary + sufficient (combined with the numpy pin above) via
+  # a live test on real GPU hardware 2026-08-14: without this,
+  # `import segger` fails with "libcudart.so.12: cannot open shared object
+  # file" once past the build node's expected no-driver failure. Resolved
+  # once at build time (literal string) rather than glob-at-startup, to
+  # avoid shell-portability risk in $SINGULARITY_ENVIRONMENT (sourced by
+  # whatever shell apptainer uses — see the zsh parsing warnings elsewhere
+  # in this recipe). Scoped var, not the global LD_LIBRARY_PATH, so it can't
+  # shadow the main env's CUDA libs for torch.
+  SEGGER_NV_LIBS=$(echo /opt/miniforge3/envs/segger_env/lib/python3.11/site-packages/nvidia/*/lib | tr ' ' ':')
+  echo "export SEGGER_LD_LIBRARY_PATH=$SEGGER_NV_LIBS" >> $SINGULARITY_ENVIRONMENT
   echo "export MESMER_PYTHON=/opt/miniforge3/envs/mesmer_env/bin/python" >> $SINGULARITY_ENVIRONMENT
   # Mesmer baked-in weights location (run_mesmer.py uses this instead of ~/.deepcell)
   echo "export MESMER_MODEL_DIR=/opt/deepcell_home/.deepcell/models" >> $SINGULARITY_ENVIRONMENT
