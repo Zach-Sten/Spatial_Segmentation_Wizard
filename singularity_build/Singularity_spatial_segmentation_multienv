@@ -424,6 +424,15 @@ PYEOF
     || $SEGGER_PIP install /opt/segger-src --no-build-isolation \
     || echo "WARNING: Segger install failed"
 
+  # Pin numpy for CuPy compatibility — same fight as the main env's BIDCell
+  # pin. segger's pyproject.toml pulls in scanpy/anndata unpinned, which
+  # bumps numpy to 2.x; the cupy-cuda12x wheel is compiled against numpy<2
+  # APIs (references np.float_, removed in 2.0) and hard-crashes on import
+  # otherwise. Must come AFTER the segger install (which is what introduces
+  # numpy 2.x) and before nothing else touches numpy.
+  $SEGGER_PIP install numpy==1.26.4 --no-deps --force-reinstall \
+    || echo "WARNING: segger_env numpy pin failed — Segger/CuPy may not work"
+
   # pkg_resources safety net (same rationale as the main env)
   $SEGGER_PIP install "setuptools<81" --force-reinstall \
     || echo "WARNING: segger_env setuptools pin failed"
