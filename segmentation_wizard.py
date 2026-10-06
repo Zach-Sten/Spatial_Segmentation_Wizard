@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scripts"))
 from utils.config_loader import (
     load_config, discover_samples, list_enabled_methods,
     get_method_config, get_output_base_override, is_slide_mode, SampleInfo,
-    check_container_exists, COMING_SOON, SUPPORTED_PLATFORMS, COMING_SOON_PLATFORMS,
+    check_container_exists, COMING_SOON,
 )
 from slurm.generate_slurm import (
     generate_slurm_script, generate_classifier_script,
@@ -245,135 +245,6 @@ MEM_DEFAULTS = {
     "stardist": "200G", "comseg": "300G", "fastreseg": "400G",
 }
 
-GPU_METHODS   = {"cellpose"}
-SOPA_METHODS  = {"baysor", "proseg", "cellpose", "stardist", "comseg"}
-
-
-def _customize_method_settings(selected, method_defaults):
-    """Walk through per-method settings. Mutates method_defaults in place.
-
-    Returns (fastreseg_source, fastreseg_mem) — fastreseg has no method_defaults
-    entry, so its two settings come back by value.
-    """
-    # ── GPU ──
-    gpu_partition = None  # asked once, shared by all GPU methods
-    print()
-    for method in [m for m in selected if m in GPU_METHODS]:
-        if prompt_yn(f"Use GPU for {method}?", default=True):
-            if gpu_partition is None:
-                gpu_partition = prompt("  GPU partition", default="common").strip() or "common"
-            method_defaults[method]["slurm"]["partition"] = gpu_partition
-        else:
-            method_defaults[method]["slurm"]["gpu"] = False
-            if method == "cellpose":
-                method_defaults[method]["params"]["gpu"] = False
-
-    # ── SOPA patch sizes ──
-    sopa_selected = [m for m in selected if m in SOPA_METHODS]
-    if sopa_selected:
-        print()
-        print(f"  {BOLD}SOPA patch settings{RESET} {DIM}({' / '.join(sopa_selected)}){RESET}")
-        print(f"  {DIM}Larger patches = more transcripts per patch = more stable segmentation{RESET}")
-        print(f"  {DIM}Note: one value is applied to every SOPA method, replacing their{RESET}")
-        print(f"  {DIM}individual defaults (proseg 1200, baysor 500, comseg 200).{RESET}")
-        transcript_patch_width = int(prompt("  Transcript patch width (µm)", default="500").strip() or "500")
-        image_patch_width      = int(prompt("  Image patch width (px)",      default="1200").strip() or "1200")
-        for m in sopa_selected:
-            if "patch_width" in method_defaults[m]["params"]:
-                method_defaults[m]["params"]["patch_width"] = transcript_patch_width
-            if "image_patch_width" in method_defaults[m]["params"]:
-                method_defaults[m]["params"]["image_patch_width"] = image_patch_width
-
-    # ── Baysor prior + auto-retry ──
-    if "baysor" in selected:
-        print()
-        print(f"  {BOLD}Baysor prior segmentation{RESET}")
-        prior_key = _prompt_prior([
-            ("cell_boundaries",    "Xenium native (default) — use native Xenium cell boundaries"),
-            ("cellpose_boundaries","Cellpose — use cellpose output as prior (requires cellpose)"),
-            ("none",               "No prior — transcript-only, not recommended unless all else fails"),
-        ])
-        if prior_key == "none":
-            method_defaults["baysor"]["params"].pop("prior_shapes_key", None)
-            print(f"  {CHECK} Baysor prior: {BOLD}none (transcript-only){RESET}")
-        else:
-            method_defaults["baysor"]["params"]["prior_shapes_key"] = prior_key
-            print(f"  {CHECK} Baysor prior: {BOLD}{prior_key}{RESET}")
-        print(f"  {DIM}Tip: if Baysor fails, try decreasing patch sizes first; as a fallback, rerun with no prior.{RESET}")
-
-        print()
-        retry = prompt("  Auto-retry with larger patches if Baysor fails? [y/n]", default="n").strip().lower() or "n"
-        if retry == "y":
-            method_defaults["baysor"]["params"].update({
-                "patch_error_correction": True,
-                "patch_correction_max": 1500,
-                "patch_correction_step": 100,
-            })
-            print(f"  {CHECK} Patch auto-retry enabled — will step up by 100µm up to 1500µm on failure")
-        else:
-            method_defaults["baysor"]["params"]["patch_error_correction"] = False
-
-    # ── ComSeg prior ──
-    if "comseg" in selected:
-        print()
-        print(f"  {BOLD}ComSeg prior segmentation{RESET} {DIM}(required — provides cell centroid seeds){RESET}")
-        comseg_prior = _prompt_prior([
-            ("cell_boundaries",     "Xenium native (default) — use native Xenium cell boundaries"),
-            ("cellpose_boundaries", "Cellpose — use cellpose output as prior (requires cellpose)"),
-            ("stardist_boundaries", "StarDist — use stardist output as prior (requires stardist)"),
-        ])
-        method_defaults["comseg"]["params"]["prior_shapes_key"] = comseg_prior
-        print(f"  {CHECK} ComSeg prior: {BOLD}{comseg_prior}{RESET}")
-
-    # ── FastReseg source ──
-    fastreseg_source = "xenium"
-    if "fastreseg" in selected:
-        available_sources = ["xenium", "proseg", "baysor", "cellpose"]
-        print()
-        print(f"  {BOLD}FastReseg{RESET} — which segmentation to refine?")
-        for i, src in enumerate(available_sources, 1):
-            label = "10x Xenium (original)" if src == "xenium" else src
-            default_marker = f"  {DIM}← default{RESET}" if i == 1 else ""
-            print(f"    {i}. {label}{default_marker}")
-        raw = prompt(f"  Choice [1-{len(available_sources)}]", default="1")
-        try:
-            idx = int(raw.strip()) - 1
-            fastreseg_source = available_sources[idx] if 0 <= idx < len(available_sources) else "xenium"
-        except (ValueError, IndexError):
-            fastreseg_source = "xenium"
-        label = "10x Xenium (original)" if fastreseg_source == "xenium" else fastreseg_source
-        print(f"  {CHECK} FastReseg will refine: {BOLD}{label}{RESET}")
-
-    # ── Memory ──
-    fastreseg_mem = MEM_DEFAULTS["fastreseg"]
-    if selected:
-        print()
-        print(f"  {BOLD}Memory per method{RESET} {DIM}(adjust if OOM errors occur){RESET}")
-        for m in selected:
-            default_mem = MEM_DEFAULTS.get(m, "400G")
-            mem = prompt(f"  {m} memory (e.g. 400G)", default=default_mem).strip() or default_mem
-            if mem[-1].isdigit():
-                mem += "G"
-            if m in method_defaults:
-                method_defaults[m]["slurm"]["mem"] = mem
-            elif m == "fastreseg":
-                fastreseg_mem = mem
-
-    return fastreseg_source, fastreseg_mem
-
-
-def _prompt_prior(options):
-    """Numbered prior-segmentation picker. Returns the chosen key, first as default."""
-    for i, (_, desc) in enumerate(options, 1):
-        default_marker = f"  {DIM}← default{RESET}" if i == 1 else ""
-        print(f"    {i}. {desc}{default_marker}")
-    raw = prompt(f"  Choice [1-{len(options)}]", default="1").strip() or "1"
-    try:
-        idx = int(raw) - 1
-        return options[idx][0] if 0 <= idx < len(options) else options[0][0]
-    except (ValueError, IndexError):
-        return options[0][0]
-
 
 def _print_default_settings(selected, method_defaults):
     """Show what the defaults resolved to, so 'default' isn't a black box."""
@@ -393,7 +264,7 @@ def _print_default_settings(selected, method_defaults):
             # No method_defaults entry — its one setting is the source segmentation.
             bits.append("refines 10x Xenium (original)")
         print(f"    {CHECK} {m:12s} {DIM}{'  ·  '.join(bits)}{RESET}")
-    print(f"\n  {DIM}Re-run and pick 'custom' to change any of these.{RESET}")
+    print(f"\n  {DIM}Edit the saved config YAML directly to change any of these.{RESET}")
 
 
 # ============================================================================
@@ -404,27 +275,73 @@ def wizard():
     """Interactive configuration wizard. Returns a config dict."""
     banner()
 
-    cfg = {"data": {}, "paths": {}, "slurm": {"default": {}}, "methods": {}}
+    cfg = {"data": {"platform": "xenium"}, "paths": {}, "slurm": {"default": {}}, "methods": {}}
 
-    # ── Reference data ──
-    section("Reference Data")
-    print(f"  {DIM}Reference h5ad used for cell type classification.{RESET}")
-    print(f"  {DIM}Leave blank to skip classification.{RESET}\n")
-    ref_path = path_prompt("Reference h5ad path (blank to skip)", default="", must_exist=False, required=False)
-    cfg["data"]["reference_path"] = ref_path
-    if ref_path:
-        cfg["data"]["reference_celltype_col"] = prompt(
-            "Cell type column in reference .obs", default="cell_type"
-        ).strip("'\"")  # strip accidental quotes
-    else:
-        cfg["data"]["reference_celltype_col"] = ""
+    # ── Methods ──
+    section("Segmentation Methods")
+
+    all_methods = ["proseg", "baysor", "cellpose", "stardist", "comseg", "fastreseg"]
+    SOPA_MANAGED = {"proseg", "baysor", "cellpose", "stardist", "comseg"}
+    selected = prompt_multi(
+        f"Which methods to run? {DIM}(✓ = SOPA-managed){RESET}", all_methods,
+        defaults=["proseg", "baysor", "cellpose"],
+        marked=SOPA_MANAGED,
+        coming_soon=sorted(COMING_SOON),
+    )
+
+    METHOD_DEFAULTS = {
+        "proseg": {
+            "slurm": {"mem": "400G", "cpus_per_task": 8},
+            "params": {"xenium_mode": True, "no_diffusion": True, "patch_width": 1200,
+                       "patch_overlap": 10, "export_expected_counts": True, "explorer_mode": "+cbm"},
+        },
+        "baysor": {
+            "slurm": {"mem": "600G", "cpus_per_task": 8},
+            "params": {"min_area": 10, "patch_width": 500, "patch_overlap": 10, "image_patch_width": 1200,
+                       "prior_shapes_key": "cell_boundaries", "parallelization_backend": "dask", "explorer_mode": "+cbm"},
+        },
+        "cellpose": {
+            "slurm": {"mem": "200G", "cpus_per_task": 8, "gpu": True, "time": "2-00:00:00"},
+            "params": {"channels": ["DAPI"], "diameter": 35, "gpu": True,
+                       "patch_width": 1200, "patch_overlap": 50, "explorer_mode": "+cbm"},
+        },
+        "stardist": {
+            "slurm": {"mem": "200G", "cpus_per_task": 8, "time": "2-00:00:00"},
+            "params": {"channels": ["DAPI"], "model_type": "2D_versatile_fluo",
+                       "patch_width": 1200, "patch_overlap": 50,
+                       "prob_thresh": 0.2, "nms_thresh": 0.6, "explorer_mode": "+cbm"},
+        },
+        "comseg": {
+            "slurm": {"mem": "300G", "cpus_per_task": 8, "time": "4-00:00:00"},
+            "params": {"prior_shapes_key": "cell_boundaries", "patch_width": 200,
+                       "min_area": 0, "allow_disconnected_polygon": True, "explorer_mode": "+cbm"},
+        },
+    }
+
+    fastreseg_source = "xenium"
+    fastreseg_mem    = MEM_DEFAULTS["fastreseg"]
+    if selected:
+        _print_default_settings(selected, METHOD_DEFAULTS)
+
+    # StarDist pretrained models are baked into the container image
+    # (STARDIST_MODELS_DIR); run_stardist.py stages them from there at job
+    # time. Set data.seg_models_path in the config by hand only to override
+    # with custom models (or when using a pre-multienv image without baked
+    # models).
+
+    for method in all_methods:
+        enabled = method in selected
+        cfg["methods"][method] = {"enabled": enabled}
+        if enabled and method in METHOD_DEFAULTS:
+            cfg["methods"][method].update(METHOD_DEFAULTS[method])
+        elif method == "fastreseg" and enabled:
+            cfg["methods"][method].update({
+                "slurm": {"mem": fastreseg_mem, "cpus_per_task": 4, "time": "1-00:00:00"},
+                "params": {"source_method": fastreseg_source, "explorer_mode": "+cb"},
+            })
 
     # ── Data ──
     section("Data")
-    cfg["data"]["platform"] = prompt_choice(
-        "Platform:", sorted(SUPPORTED_PLATFORMS), default="xenium",
-        coming_soon=COMING_SOON_PLATFORMS,
-    )
 
     data_mode = prompt_choice(
         "Data mode:",
@@ -486,135 +403,68 @@ def wizard():
     override = path_prompt("Output path", required=False)
     cfg["paths"]["output_base_override"] = override
 
-    # ── Methods ──
-    section("Segmentation Methods")
+    # ── Reference data + classifier ──
+    section("Reference Data")
+    print(f"  {DIM}Reference h5ad used for cell type classification.{RESET}")
+    print(f"  {DIM}Leave blank to skip classification.{RESET}\n")
+    ref_path = path_prompt("Reference h5ad path (blank to skip)", default="", must_exist=False, required=False)
+    cfg["data"]["reference_path"] = ref_path
 
-    all_methods = ["proseg", "baysor", "cellpose", "stardist", "comseg", "fastreseg"]
-
-    SOPA_MANAGED = {"proseg", "baysor", "cellpose", "stardist", "comseg"}
-    selected = prompt_multi(
-        f"Which methods to run? {DIM}(✓ = SOPA-managed){RESET}", all_methods,
-        defaults=["proseg", "baysor", "cellpose"],
-        marked=SOPA_MANAGED,
-        coming_soon=sorted(COMING_SOON),
-    )
-
-    METHOD_DEFAULTS = {
-        "proseg": {
-            "slurm": {"mem": "400G", "cpus_per_task": 8},
-            "params": {"xenium_mode": True, "no_diffusion": True, "patch_width": 1200,
-                       "patch_overlap": 10, "export_expected_counts": True, "explorer_mode": "+cbm"},
-        },
-        "baysor": {
-            "slurm": {"mem": "600G", "cpus_per_task": 8},
-            "params": {"min_area": 10, "patch_width": 500, "patch_overlap": 10, "image_patch_width": 1200,
-                       "prior_shapes_key": "cell_boundaries", "parallelization_backend": "dask", "explorer_mode": "+cbm"},
-        },
-        "cellpose": {
-            "slurm": {"mem": "200G", "cpus_per_task": 8, "gpu": True, "time": "2-00:00:00"},
-            "params": {"channels": ["DAPI"], "diameter": 35, "gpu": True,
-                       "patch_width": 1200, "patch_overlap": 50, "explorer_mode": "+cbm"},
-        },
-        "stardist": {
-            "slurm": {"mem": "200G", "cpus_per_task": 8, "time": "2-00:00:00"},
-            "params": {"channels": ["DAPI"], "model_type": "2D_versatile_fluo",
-                       "patch_width": 1200, "patch_overlap": 50,
-                       "prob_thresh": 0.2, "nms_thresh": 0.6, "explorer_mode": "+cbm"},
-        },
-        "comseg": {
-            "slurm": {"mem": "300G", "cpus_per_task": 8, "time": "4-00:00:00"},
-            "params": {"prior_shapes_key": "cell_boundaries", "patch_width": 200,
-                       "min_area": 0, "allow_disconnected_polygon": True, "explorer_mode": "+cbm"},
-        },
-    }
-
-    # ── Default or custom settings ──
-    fastreseg_source = "xenium"
-    fastreseg_mem    = MEM_DEFAULTS["fastreseg"]
-    if selected:
-        print()
-        mode = prompt_choice(
-            "Method settings:", ["default", "custom"], default="default",
-        )
-        if mode == "custom":
-            fastreseg_source, fastreseg_mem = _customize_method_settings(selected, METHOD_DEFAULTS)
-        else:
-            _print_default_settings(selected, METHOD_DEFAULTS)
-
-    # StarDist pretrained models are baked into the container image
-    # (STARDIST_MODELS_DIR); run_stardist.py stages them from there at job
-    # time. Set data.seg_models_path in the config by hand only to override
-    # with custom models (or when using a pre-multienv image without baked
-    # models).
-
-    for method in all_methods:
-        enabled = method in selected
-        cfg["methods"][method] = {"enabled": enabled}
-        if enabled and method in METHOD_DEFAULTS:
-            cfg["methods"][method].update(METHOD_DEFAULTS[method])
-        elif method == "fastreseg" and enabled:
-            cfg["methods"][method].update({
-                "slurm": {"mem": fastreseg_mem, "cpus_per_task": 4, "time": "1-00:00:00"},
-                "params": {"source_method": fastreseg_source, "explorer_mode": "+cb"},
-            })
-
-    # Classifier — requires a reference dataset to be set
-    print()
     run_classifier = False
     classifier_gpu = False
     classifier_retrain = False
     classifier_use_rank = True
-    if cfg["data"].get("reference_path"):
-        run_classifier = prompt_yn("Classify cell types?", default=False)
-        if run_classifier:
-            # Ask use_rank FIRST so the cache check can include it
-            classifier_use_rank = prompt_yn(
-                "Use rank-based feature matrix? (recommended; disable to use raw counts directly)",
-                default=True,
-            )
+    if ref_path:
+        cfg["data"]["reference_celltype_col"] = prompt(
+            "Cell type column in reference .obs", default="cell_type"
+        ).strip("'\"")  # strip accidental quotes
+        run_classifier = True
 
-            # Check if a cached model already exists for this data_dir
-            _output_base = cfg.get("paths", {}).get("output_base_override", "")
-            _slide_dir   = cfg["data"].get("slide_dir", "")
-            _smp_dir     = cfg["data"].get("sample_dir", "")
-            if _output_base:
-                _data_dir = Path(_output_base)
-            elif _slide_dir:
-                _data_dir = Path(_slide_dir)
-            else:
-                _data_dir = Path(_smp_dir).parent
-            _ref_path   = cfg["data"].get("reference_path", "")
-            _ref_col    = cfg["data"].get("reference_celltype_col", "cell_type")
-            _ref_stem   = Path(_ref_path).stem if _ref_path else "classifier"
-            _cache      = _data_dir / f"classifier_cache_{_ref_stem}" / "model.json"
-            _cache_info = _data_dir / f"classifier_cache_{_ref_stem}" / "cache_info.json"
-            _cache_matches = False
-            if _cache.exists():
-                if _cache_info.exists() and _ref_path:
-                    import json as _json
-                    _meta = _json.loads(_cache_info.read_text())
-                    _cached_ref  = _meta.get("reference_path", "")
-                    _cached_col  = _meta.get("celltype_col", "").strip("'\"")
-                    _cached_rank = _meta.get("use_rank", True)
-                    _cache_matches = (
-                        _cached_ref  == str(Path(_ref_path).resolve()) and
-                        _cached_col  == _ref_col.strip("'\"") and
-                        _cached_rank == classifier_use_rank
-                    )
-                else:
-                    # No metadata — treat as stale when a reference is specified
-                    _cache_matches = not bool(_ref_path)
-            if _cache_matches:
-                print(f"  {CHECK} Cached model found: {_cache.parent.name}  (ref: {Path(_ref_path).name})")
-                classifier_retrain = not prompt_yn("Use cached model?", default=True)
-                if classifier_retrain:
-                    print(f"  {DIM}Will retrain from scratch{RESET}")
-            elif _cache.exists():
-                print(f"  {DIM}Cache exists but does not match current settings — will retrain{RESET}")
-            classifier_gpu = prompt_yn("Use GPU for classifier (XGBoost)?", default=False)
+        # Ask use_rank FIRST so the cache check can include it
+        classifier_use_rank = prompt_yn(
+            "Use rank-based feature matrix? (recommended; disable to use raw counts directly)",
+            default=True,
+        )
+
+        # Check if a cached model already exists for this data_dir
+        _output_base = cfg.get("paths", {}).get("output_base_override", "")
+        _slide_dir   = cfg["data"].get("slide_dir", "")
+        _smp_dir     = cfg["data"].get("sample_dir", "")
+        if _output_base:
+            _data_dir = Path(_output_base)
+        elif _slide_dir:
+            _data_dir = Path(_slide_dir)
+        else:
+            _data_dir = Path(_smp_dir).parent
+        _ref_col    = cfg["data"]["reference_celltype_col"]
+        _ref_stem   = Path(ref_path).stem
+        _cache      = _data_dir / f"classifier_cache_{_ref_stem}" / "model.json"
+        _cache_info = _data_dir / f"classifier_cache_{_ref_stem}" / "cache_info.json"
+        _cache_matches = False
+        if _cache.exists() and _cache_info.exists():
+            import json as _json
+            _meta = _json.loads(_cache_info.read_text())
+            _cached_ref  = _meta.get("reference_path", "")
+            _cached_col  = _meta.get("celltype_col", "").strip("'\"")
+            _cached_rank = _meta.get("use_rank", True)
+            _cache_matches = (
+                _cached_ref  == str(Path(ref_path).resolve()) and
+                _cached_col  == _ref_col.strip("'\"") and
+                _cached_rank == classifier_use_rank
+            )
+        if _cache_matches:
+            print(f"  {CHECK} Cached model found: {_cache.parent.name}  (ref: {Path(ref_path).name})")
+            classifier_retrain = not prompt_yn("Use cached model?", default=True)
+            if classifier_retrain:
+                print(f"  {DIM}Will retrain from scratch{RESET}")
+        elif _cache.exists():
+            print(f"  {DIM}Cache exists but does not match current settings — will retrain{RESET}")
+
+        classifier_gpu = prompt_yn("Use GPU for classifier (XGBoost)?", default=False)
     else:
-        print(f"  {DIM}Cell type classification skipped — no reference path provided{RESET}")
-        classifier_use_rank = True
+        cfg["data"]["reference_celltype_col"] = ""
+        print(f"  {DIM}No reference provided — classification skipped{RESET}")
+
     cfg["methods"]["classifier"] = {
         "enabled": run_classifier,
         "slurm": {"mem": "100G", "cpus_per_task": 8, "gpu": classifier_gpu, "time": "1-00:00:00"},
