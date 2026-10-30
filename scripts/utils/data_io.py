@@ -5,6 +5,7 @@ Data loading, saving, export, thread setup, and the common CLI contract.
 """
 
 import os
+import shutil
 import time
 import argparse
 import warnings
@@ -106,23 +107,39 @@ def _get_xenium_load_path(raw_data_path: str) -> str:
     if not new_style or legacy_style:
         return raw_data_path  # Old naming or mixed — load directly
 
+    # spatialdata-io only accepts 1 or 4 morphology files (4 = segmentation kit:
+    # DAPI, boundary, interior RNA, interior protein). Newer outputs also hold
+    # background and protein-marker channels, so keep only the first 4.
+    new_style = new_style[:4]
+
     # Build a shadow sample dir in pipeline cache (sibling of raw dir named _normalized)
     raw = Path(raw_data_path).resolve()
     shadow = raw.parent / f".xenium_normalized_{raw.name}"
 
+    # A shadow from an earlier run may hold the wrong channel set; rebuild it.
+    shadow_morph = shadow / "morphology_focus"
+    if shadow.exists() and len(list(shadow_morph.glob("morphology_focus_*.ome.tif"))) != len(new_style):
+        shutil.rmtree(shadow)
+
     if not shadow.exists():
-        shadow.mkdir()
+        # Build in a private temp dir and rename, so parallel jobs never see a half-built one.
+        tmp = shadow.with_name(f"{shadow.name}.tmp{os.getpid()}")
+        tmp.mkdir()
         # Symlink every top-level item except morphology_focus
         for item in raw.iterdir():
             if item.name != "morphology_focus":
-                (shadow / item.name).symlink_to(item)
+                (tmp / item.name).symlink_to(item)
 
         # Build morphology_focus with legacy-named symlinks
-        shadow_morph = shadow / "morphology_focus"
-        shadow_morph.mkdir()
+        (tmp / "morphology_focus").mkdir()
         for i, src in enumerate(new_style):
-            (shadow_morph / f"morphology_focus_{i:04d}.ome.tif").symlink_to(src)
-        print(f"[INFO] Created normalized shadow dir: {shadow}")
+            (tmp / "morphology_focus" / f"morphology_focus_{i:04d}.ome.tif").symlink_to(src)
+        try:
+            tmp.rename(shadow)
+            print(f"[INFO] Created normalized shadow dir: {shadow}")
+        except OSError:  # another job won the race
+            shutil.rmtree(tmp)
+            print(f"[INFO] Reusing normalized shadow dir: {shadow}")
     else:
         print(f"[INFO] Reusing normalized shadow dir: {shadow}")
 
