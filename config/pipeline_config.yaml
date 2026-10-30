@@ -88,8 +88,8 @@ slurm:
     nodes: 1
     ntasks: 1
     cpus_per_task: 8
-    mem: "400G"
-    time: "7-00:00:00"
+    mem: "200G"
+    time: "2-00:00:00"
     gpu: false
 
 # ── Method-Specific Parameters ──
@@ -97,7 +97,8 @@ methods:
   proseg:
     enabled: true
     slurm:
-      mem: "400G"
+      mem: "200G"
+      time: "2-00:00:00"
       cpus_per_task: 8
     params:
       xenium_mode: true
@@ -110,7 +111,8 @@ methods:
   baysor:
     enabled: true
     slurm:
-      mem: "600G"
+      mem: "200G"
+      time: "2-00:00:00"
       cpus_per_task: 8
     params:
       min_area: 10
@@ -141,10 +143,10 @@ methods:
   bidcell:
     enabled: false
     slurm:
-      mem: "300G"
+      mem: "200G"
       cpus_per_task: 8
       gpu: true
-      time: "3-00:00:00"
+      time: "2-00:00:00"
     params:
       config_template: "xenium"
       explorer_mode: "+cbm"
@@ -154,7 +156,7 @@ methods:
     slurm:
       mem: "200G"
       cpus_per_task: 4
-      time: "1-00:00:00"
+      time: "2-00:00:00"
     params:
       source_method: "xenium"    # xenium = original 10x segmentation; or: proseg, baysor, cellpose, bidcell
 

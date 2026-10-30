@@ -240,9 +240,13 @@ def path_prompt(label, default=None, must_exist=False, required=True):
 # Method settings
 # ============================================================================
 
+# One place to tune the segmentation job request (memory / wall time).
+SEG_MEM  = "200G"
+SEG_TIME = "2-00:00:00"
+
 MEM_DEFAULTS = {
-    "proseg": "400G", "baysor": "600G", "cellpose": "200G",
-    "stardist": "200G", "comseg": "300G", "fastreseg": "400G",
+    "proseg": SEG_MEM, "baysor": SEG_MEM, "cellpose": SEG_MEM,
+    "stardist": SEG_MEM, "comseg": SEG_MEM, "fastreseg": SEG_MEM,
 }
 
 
@@ -291,28 +295,28 @@ def wizard():
 
     METHOD_DEFAULTS = {
         "proseg": {
-            "slurm": {"mem": "400G", "cpus_per_task": 8},
+            "slurm": {"mem": SEG_MEM, "cpus_per_task": 8, "time": SEG_TIME},
             "params": {"xenium_mode": True, "no_diffusion": True, "patch_width": 1200,
                        "patch_overlap": 10, "export_expected_counts": True, "explorer_mode": "+cbm"},
         },
         "baysor": {
-            "slurm": {"mem": "600G", "cpus_per_task": 8},
+            "slurm": {"mem": SEG_MEM, "cpus_per_task": 8, "time": SEG_TIME},
             "params": {"min_area": 10, "patch_width": 500, "patch_overlap": 10, "image_patch_width": 1200,
                        "prior_shapes_key": "cell_boundaries", "parallelization_backend": "dask", "explorer_mode": "+cbm"},
         },
         "cellpose": {
-            "slurm": {"mem": "200G", "cpus_per_task": 8, "gpu": True, "time": "2-00:00:00"},
+            "slurm": {"mem": SEG_MEM, "cpus_per_task": 8, "gpu": True, "time": SEG_TIME},
             "params": {"channels": ["DAPI"], "diameter": 35, "gpu": True,
                        "patch_width": 1200, "patch_overlap": 50, "explorer_mode": "+cbm"},
         },
         "stardist": {
-            "slurm": {"mem": "200G", "cpus_per_task": 8, "time": "2-00:00:00"},
+            "slurm": {"mem": SEG_MEM, "cpus_per_task": 8, "time": SEG_TIME},
             "params": {"channels": ["DAPI"], "model_type": "2D_versatile_fluo",
                        "patch_width": 1200, "patch_overlap": 50,
                        "prob_thresh": 0.2, "nms_thresh": 0.6, "explorer_mode": "+cbm"},
         },
         "comseg": {
-            "slurm": {"mem": "300G", "cpus_per_task": 8, "time": "4-00:00:00"},
+            "slurm": {"mem": SEG_MEM, "cpus_per_task": 8, "time": SEG_TIME},
             "params": {"prior_shapes_key": "cell_boundaries", "patch_width": 200,
                        "min_area": 0, "allow_disconnected_polygon": True, "explorer_mode": "+cbm"},
         },
@@ -336,7 +340,7 @@ def wizard():
             cfg["methods"][method].update(METHOD_DEFAULTS[method])
         elif method == "fastreseg" and enabled:
             cfg["methods"][method].update({
-                "slurm": {"mem": fastreseg_mem, "cpus_per_task": 4, "time": "1-00:00:00"},
+                "slurm": {"mem": fastreseg_mem, "cpus_per_task": 4, "time": SEG_TIME},
                 "params": {"source_method": fastreseg_source, "explorer_mode": "+cb"},
             })
 
@@ -496,7 +500,7 @@ def wizard():
     # ── SLURM defaults (edit the saved YAML for custom partition/account) ──
     cfg["slurm"] = {
         "partition": "", "account": "", "email": "", "mail_type": "END,FAIL",
-        "default": {"nodes": 1, "ntasks": 1, "cpus_per_task": 8, "mem": "400G", "time": "7-00:00:00", "gpu": False},
+        "default": {"nodes": 1, "ntasks": 1, "cpus_per_task": 8, "mem": SEG_MEM, "time": SEG_TIME, "gpu": False},
     }
 
     # ── Notifications ──
