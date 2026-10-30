@@ -5,7 +5,6 @@ Data loading, saving, export, thread setup, and the common CLI contract.
 """
 
 import os
-import shutil
 import time
 import argparse
 import warnings
@@ -88,70 +87,33 @@ def configure_dask(cpus: int):
 
 
 # ── Data loading ──
-def _get_xenium_load_path(raw_data_path: str) -> str:
-    """Return a path xenium() can load from, handling new-style morphology_focus naming.
-
-    Newer Xenium outputs name morphology focus files as ch000X_<name>.ome.tif;
-    spatialdata-io expects morphology_focus_000X.ome.tif.  Rather than touching
-    the raw data directory, we build a shadow directory under a pipeline cache
-    location containing only symlinks, with the morphology_focus subdir properly
-    renamed.  The shadow dir is reused across runs (idempotent).
-    """
-    morph_dir = Path(raw_data_path) / "morphology_focus"
-    if not morph_dir.exists():
-        return raw_data_path
-
-    new_style = sorted(morph_dir.glob("ch*.ome.tif"))
-    legacy_style = [f for f in morph_dir.glob("morphology_focus_*.ome.tif")
-                    if not f.is_symlink()]  # ignore any symlinks we may have created previously
-    if not new_style or legacy_style:
-        return raw_data_path  # Old naming or mixed — load directly
-
-    # spatialdata-io only accepts 1 or 4 morphology files (4 = segmentation kit:
-    # DAPI, boundary, interior RNA, interior protein). Newer outputs also hold
-    # background and protein-marker channels, so keep only the first 4.
-    new_style = new_style[:4]
-
-    # Build a shadow sample dir in pipeline cache (sibling of raw dir named _normalized)
-    raw = Path(raw_data_path).resolve()
-    shadow = raw.parent / f".xenium_normalized_{raw.name}"
-
-    # A shadow from an earlier run may hold the wrong channel set; rebuild it.
-    shadow_morph = shadow / "morphology_focus"
-    if shadow.exists() and len(list(shadow_morph.glob("morphology_focus_*.ome.tif"))) != len(new_style):
-        shutil.rmtree(shadow)
-
-    if not shadow.exists():
-        # Build in a private temp dir and rename, so parallel jobs never see a half-built one.
-        tmp = shadow.with_name(f"{shadow.name}.tmp{os.getpid()}")
-        tmp.mkdir()
-        # Symlink every top-level item except morphology_focus
-        for item in raw.iterdir():
-            if item.name != "morphology_focus":
-                (tmp / item.name).symlink_to(item)
-
-        # Build morphology_focus with legacy-named symlinks
-        (tmp / "morphology_focus").mkdir()
-        for i, src in enumerate(new_style):
-            (tmp / "morphology_focus" / f"morphology_focus_{i:04d}.ome.tif").symlink_to(src)
-        try:
-            tmp.rename(shadow)
-            print(f"[INFO] Created normalized shadow dir: {shadow}")
-        except OSError:  # another job won the race
-            shutil.rmtree(tmp)
-            print(f"[INFO] Reusing normalized shadow dir: {shadow}")
-    else:
-        print(f"[INFO] Reusing normalized shadow dir: {shadow}")
-
-    return str(shadow)
-
-
 @timed("Load spatial data")
 def load_xenium_data(raw_data_path: str):
-    """Load Xenium data via spatialdata-io."""
+    """Load Xenium data via spatialdata-io.
+
+    Newer Xenium outputs store one OME-TIFF per channel (ch0000_dapi.ome.tif, ...),
+    each describing all ~20 channels, which the pinned spatialdata-io cannot read.
+    For those we skip its morphology reader and attach the DAPI plane ourselves.
+    """
     from spatialdata_io import xenium
-    load_path = _get_xenium_load_path(raw_data_path)
-    sdata = xenium(load_path, cells_as_circles=True)
+    morph_dir = Path(raw_data_path) / "morphology_focus"
+    dapi = morph_dir / "ch0000_dapi.ome.tif"
+    new_style = dapi.exists() and not any(morph_dir.glob("morphology_focus_*.ome.tif"))
+
+    sdata = xenium(raw_data_path, cells_as_circles=True, morphology_focus=not new_style)
+
+    if new_style:
+        import dask.array as da
+        import tifffile
+        from spatialdata.models import Image2DModel
+        from spatialdata.transformations import Identity
+        # key=0 reads only the full-resolution plane, not the multi-file OME series
+        plane = tifffile.imread(dapi, key=0)
+        sdata.images["morphology_focus"] = Image2DModel.parse(
+            da.from_array(plane[None], chunks=(1, 2048, 2048)),
+            dims=("c", "y", "x"), c_coords=["DAPI"],
+            transformations={"global": Identity()},
+        )
     print(f"[INFO] Loaded: {list(sdata.images.keys())} images, "
           f"{len(sdata.points) if hasattr(sdata, 'points') else '?'} point tables")
     return sdata
