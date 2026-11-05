@@ -87,18 +87,49 @@ def configure_dask(cpus: int):
 
 
 # ── Data loading ──
+def inspect_morphology(raw_data_path: str) -> dict:
+    """List the morphology_focus files of a Xenium run (no heavy imports).
+
+    Returns {"dapi": Path|None, "legacy": [paths], "channels": [(idx, name, path)],
+             "protein": [(idx, name, path)]}.
+    Standard runs have 1 (no seg kit) or 4 (seg kit) legacy morphology_focus_*.ome.tif.
+    Proteomics-kit runs add one ch####_<name>.ome.tif per channel (DAPI, 18S,
+    backgrounds, then antibodies); the antibody channels are returned as "protein".
+    """
+    import re
+    morph_dir = Path(raw_data_path) / "morphology_focus"
+    legacy = sorted(morph_dir.glob("morphology_focus_*.ome.tif"))
+    chans = []
+    for f in sorted(morph_dir.glob("ch*_*.ome.tif")):
+        m = re.match(r"ch(\d+)_(.+)\.ome\.tif$", f.name)
+        if m:
+            chans.append((int(m.group(1)), m.group(2), f))
+    non_protein = ("dapi", "18s", "background")
+    protein = [c for c in chans if not any(t in c[1].lower() for t in non_protein)]
+    dapi = next((c[2] for c in chans if c[1].lower() == "dapi"), None)
+    return {"dapi": dapi, "legacy": legacy, "channels": chans, "protein": protein}
+
+
+def extract_protein_requested() -> bool:
+    return os.environ.get("SEGWIZ_EXTRACT_PROTEIN", "").lower() in ("1", "true", "yes")
+
+
 @timed("Load spatial data")
 def load_xenium_data(raw_data_path: str):
     """Load Xenium data via spatialdata-io.
 
-    Newer Xenium outputs store one OME-TIFF per channel (ch0000_dapi.ome.tif, ...),
-    each describing all ~20 channels, which the pinned spatialdata-io cannot read.
-    For those we skip its morphology reader and attach the DAPI plane ourselves.
+    Proteomics-kit outputs store one OME-TIFF per channel (ch0000_dapi.ome.tif, ...)
+    alongside (or instead of) the legacy morphology_focus_*.ome.tif, and
+    spatialdata-io raises when the file count is not 1 or 4. For those we skip its
+    morphology reader and attach the images ourselves: DAPI as "morphology_focus",
+    and, if SEGWIZ_EXTRACT_PROTEIN=1 (data.extract_protein in the config), the
+    antibody channels as a multi-channel "protein_focus" image.
     """
     from spatialdata_io import xenium
-    morph_dir = Path(raw_data_path) / "morphology_focus"
-    dapi = morph_dir / "ch0000_dapi.ome.tif"
-    new_style = dapi.exists() and not any(morph_dir.glob("morphology_focus_*.ome.tif"))
+    info = inspect_morphology(raw_data_path)
+    dapi = info["dapi"]
+    # any per-channel ch####_*.ome.tif files make spatialdata-io count the folder wrong
+    new_style = dapi is not None
 
     sdata = xenium(raw_data_path, cells_as_circles=True, morphology_focus=not new_style)
 
@@ -107,13 +138,20 @@ def load_xenium_data(raw_data_path: str):
         import tifffile
         from spatialdata.models import Image2DModel
         from spatialdata.transformations import Identity
-        # key=0 reads only the full-resolution plane, not the multi-file OME series
-        plane = tifffile.imread(dapi, key=0)
-        sdata.images["morphology_focus"] = Image2DModel.parse(
-            da.from_array(plane[None], chunks=(1, 2048, 2048)),
-            dims=("c", "y", "x"), c_coords=["DAPI"],
-            transformations={"global": Identity()},
-        )
+
+        def _add(key, files, names):
+            # key=0 reads only the full-resolution plane, not the multi-file OME series
+            planes = [tifffile.imread(f, key=0) for f in files]
+            sdata.images[key] = Image2DModel.parse(
+                da.from_array(np.stack(planes), chunks=(1, 2048, 2048)),
+                dims=("c", "y", "x"), c_coords=names,
+                transformations={"global": Identity()},
+            )
+
+        _add("morphology_focus", [dapi], ["DAPI"])
+        if extract_protein_requested() and info["protein"]:
+            _add("protein_focus", [c[2] for c in info["protein"]], [c[1] for c in info["protein"]])
+            print(f"[INFO] Extracted {len(info['protein'])} protein channels")
     print(f"[INFO] Loaded: {list(sdata.images.keys())} images, "
           f"{len(sdata.points) if hasattr(sdata, 'points') else '?'} point tables")
     return sdata

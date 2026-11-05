@@ -389,6 +389,21 @@ def wizard():
         print(f"  {DIM}(This is OK if the path isn't accessible from this machine){RESET}")
         samples = []
 
+    # ── Proteomics-kit check: extra ch####_*.ome.tif morphology files ──
+    try:
+        from utils.data_io import inspect_morphology
+        with_protein = [(s, inspect_morphology(str(s.sample_dir))["protein"]) for s in samples]
+        with_protein = [(s, p) for s, p in with_protein if p]
+        if with_protein:
+            print(f"\n  {YELLOW}{len(with_protein)} sample(s) have extra proteomics channels "
+                  f"(beyond the standard morphology files):{RESET}")
+            for s, p in with_protein:
+                print(f"     {s.sample_id}: {', '.join(c[1] for c in p)}")
+            cfg["data"]["extract_protein"] = prompt_yn(
+                "Extract protein channels as a 'protein_focus' image?", default=False)
+    except Exception as e:
+        print(f"  {DIM}(Skipped proteomics check: {e}){RESET}")
+
     # ── Exclude/include ──
     if samples and len(samples) > 1:
         print()

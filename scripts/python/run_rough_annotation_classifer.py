@@ -520,6 +520,7 @@ def main():
         for h5ad_path, _, _, _ in queries.values():
             q = sc.read_h5ad(h5ad_path, backed="r")
             genes = q.var_names
+            q.file.close()  # backed handle would block the in-place write_h5ad later
             common_genes = genes if common_genes is None else common_genes.intersection(genes)
         print(f"[INFO] Common genes across all queries: {len(common_genes)}")
         ref = ref[:, ref.var_names.intersection(common_genes)].copy()

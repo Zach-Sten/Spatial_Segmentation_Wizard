@@ -146,6 +146,8 @@ def load_config(config_path: str) -> dict:
         raise ValueError("Config missing paths.container_sif")
 
     data = cfg["data"]
+    if data.get("extract_protein"):
+        os.environ["SEGWIZ_EXTRACT_PROTEIN"] = "1"
 
     platform = data.get("platform", "xenium")
     if platform not in SUPPORTED_PLATFORMS:
