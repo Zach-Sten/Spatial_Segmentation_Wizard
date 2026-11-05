@@ -241,7 +241,7 @@ def path_prompt(label, default=None, must_exist=False, required=True):
 # ============================================================================
 
 # One place to tune the segmentation job request (memory / wall time).
-SEG_MEM  = "200G"
+SEG_MEM  = "400G"
 SEG_TIME = "2-00:00:00"
 
 MEM_DEFAULTS = {

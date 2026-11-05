@@ -121,7 +121,7 @@ def generate_slurm_script(
 
     lines = _sbatch_directives(
         job_name, log_dir, slurm, site,
-        defaults={"time": "2-00:00:00", "cpus_per_task": 8, "mem": "200G"},
+        defaults={"time": "2-00:00:00", "cpus_per_task": 8, "mem": "400G"},
     )
 
     lines += [

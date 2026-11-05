@@ -88,7 +88,7 @@ slurm:
     nodes: 1
     ntasks: 1
     cpus_per_task: 8
-    mem: "200G"
+    mem: "400G"
     time: "2-00:00:00"
     gpu: false
 
@@ -97,7 +97,7 @@ methods:
   proseg:
     enabled: true
     slurm:
-      mem: "200G"
+      mem: "400G"
       time: "2-00:00:00"
       cpus_per_task: 8
     params:
@@ -111,7 +111,7 @@ methods:
   baysor:
     enabled: true
     slurm:
-      mem: "200G"
+      mem: "400G"
       time: "2-00:00:00"
       cpus_per_task: 8
     params:
@@ -126,7 +126,7 @@ methods:
   cellpose:
     enabled: true
     slurm:
-      mem: "200G"
+      mem: "400G"
       cpus_per_task: 8
       gpu: true
       time: "2-00:00:00"
@@ -143,7 +143,7 @@ methods:
   bidcell:
     enabled: false
     slurm:
-      mem: "200G"
+      mem: "400G"
       cpus_per_task: 8
       gpu: true
       time: "2-00:00:00"
@@ -154,7 +154,7 @@ methods:
   fastreseg:
     enabled: false
     slurm:
-      mem: "200G"
+      mem: "400G"
       cpus_per_task: 4
       time: "2-00:00:00"
     params:

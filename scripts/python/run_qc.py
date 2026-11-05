@@ -740,15 +740,14 @@ def _run_multi_sample_qc(args):
 
         generate_qc_plots(adata, method, qc_dir)
 
-        # Save concatenated h5ad for this method so downstream tools have a
-        # single file covering all samples (mirrors xenium_export_concat.h5ad).
-        if method != "xenium":
-            try:
-                concat_path = base_dir / "qc" / f"{method}_concat.h5ad"
-                adata.write_h5ad(concat_path)
-                print(f"[INFO] Concat h5ad saved: {concat_path.name} ({adata.n_obs} cells)")
-            except Exception as e:
-                print(f"[WARN] Could not save concat h5ad for {method}: {e}")
+        # Save concatenated h5ad for this method (incl. the xenium baseline) so
+        # downstream tools have a single file covering all samples.
+        try:
+            concat_path = base_dir / "qc" / f"{method}_concat.h5ad"
+            adata.write_h5ad(concat_path)
+            print(f"[INFO] Concat h5ad saved: {concat_path.name} ({adata.n_obs} cells)")
+        except Exception as e:
+            print(f"[WARN] Could not save concat h5ad for {method}: {e}")
 
     # One CSV per family with a `method` column — must land before segger,
     # which reads morpho.csv back for cell areas / centroids.
