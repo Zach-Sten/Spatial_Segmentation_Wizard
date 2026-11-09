@@ -513,8 +513,17 @@ def wizard():
     cfg["methods"]["xenium_export"] = {
         "enabled": run_classifier,
         "slurm": {"mem": "50G", "cpus_per_task": 4, "time": "0-02:00:00"},
-        "params": {},
+        "params": {"reexport": True},
     }
+    if run_classifier and samples:
+        _ob = cfg["paths"].get("output_base_override", "")
+        _done = [s for s in samples
+                 if (s.output_dir("xenium_export", _ob) / f"{s.sample_id}.h5ad").exists()]
+        if _done:
+            print(f"\n  {CHECK} Xenium baseline h5ad already exported for "
+                  f"{BOLD}{len(_done)}/{len(samples)}{RESET} sample(s)")
+            cfg["methods"]["xenium_export"]["params"]["reexport"] = prompt_yn(
+                "Re-run the Xenium export anyway? (No = skip, saves jobs)", default=False)
 
     print()
     if not selected:
@@ -715,8 +724,16 @@ def generate_and_submit(cfg, config_path, do_submit=False):
             )
             qc_pdf_paths.append(str(qc_dir / "qc_report.pdf"))
 
+    def _export_needed(sample):
+        if not run_classifier:
+            return False
+        if cfg["methods"].get("xenium_export", {}).get("params", {}).get("reexport", True):
+            return True
+        return not (sample.output_dir("xenium_export", output_base)
+                    / f"{sample.sample_id}.h5ad").exists()
+
     classify_count = 1 if run_classifier else 0
-    xenium_export_count = len(samples) if run_classifier else 0
+    xenium_export_count = sum(_export_needed(s) for s in samples)
     qc_count = 1 if run_qc else 0  # always 1 job (combined or per-sample loop is N but 1 in slide mode)
     total = (len(samples) * (len(primary) + len(post))
              + xenium_export_count + classify_count
@@ -744,7 +761,9 @@ def generate_and_submit(cfg, config_path, do_submit=False):
             seg_ids = []
 
             # ── Xenium export (no dependencies — runs alongside seg jobs) ──
-            if run_classifier:
+            if run_classifier and not _export_needed(sample):
+                print(f"    {DIM}{sample.sample_id}/xenium_export skipped (h5ad exists){RESET}")
+            elif run_classifier:
                 content = generate_slurm_script(cfg, "xenium_export", sample, config_path)
                 fname = f"submit_xenium_export_{sample.sample_id}.sh"
                 spath = out_path / fname
