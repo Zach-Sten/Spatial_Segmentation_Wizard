@@ -327,6 +327,24 @@ def wizard():
     if selected:
         _print_default_settings(selected, METHOD_DEFAULTS)
 
+    if "baysor" in selected:
+        print(f"\n  {YELLOW}Baysor transcript patch width (µm){RESET}")
+        print(f"  {DIM}Recommended: 500. Larger patches hold more transcripts and need much more")
+        print(f"  memory/compute per patch; very dense tissue can crash Baysor (exit 135).")
+        print(f"  Try 200-300 if patches fail.{RESET}")
+        while True:
+            val = prompt("Baysor patch width", default=str(METHOD_DEFAULTS["baysor"]["params"]["patch_width"]))
+            try:
+                pw = int(val)
+                if pw > 0:
+                    break
+            except ValueError:
+                pass
+            print(f"  {RED}Enter a positive integer.{RESET}")
+        METHOD_DEFAULTS["baysor"]["params"]["patch_width"] = pw
+        if pw > 500:
+            print(f"  {YELLOW}⚠ {pw}µm is above the recommended 500 — expect higher memory use.{RESET}")
+
     # StarDist pretrained models are baked into the container image
     # (STARDIST_MODELS_DIR); run_stardist.py stages them from there at job
     # time. Set data.seg_models_path in the config by hand only to override
