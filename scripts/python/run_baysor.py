@@ -31,6 +31,54 @@ from utils.data_io import (
 )
 
 
+class TooManyFailedPatches(RuntimeError):
+    pass
+
+
+def _retry_failed_patches(sdata, failed, baysor_kwargs, params):
+    """
+    Re-run failed patches with a slightly perturbed Baysor scale, then re-resolve.
+
+    Baysor 0.7.1's loom writer crashes when #cells == #genes in a patch
+    (inverted length check). Changing the scale changes the cell count, which
+    sidesteps the coincidence. Returns the patches that still have no loom.
+    """
+    import toml
+    from functools import partial
+    from sopa import settings
+    from sopa.segmentation.methods._baysor import BaysorPatch, _get_baysor_command
+    from sopa.segmentation.methods import _baysor as _bm
+    from sopa.constants import SopaFiles, SopaKeys
+
+    prior_key = SopaKeys.SOPA_PRIOR if SopaKeys.PRIOR_SHAPES_KEY in sdata.shapes[SopaKeys.TRANSCRIPTS_PATCHES] else None
+    cmd = _get_baysor_command(prior_key)
+    base_scale = baysor_kwargs.get("scale", 15)
+    remaining = [Path(d) for d in failed]
+
+    for delta in params.get("retry_scale_deltas", [0.5, -0.5, 1.0]):
+        if not remaining:
+            break
+        print(f"[INFO] Retrying {len(remaining)} failed patch(es) with scale={base_scale + delta}")
+        funcs = []
+        for d in remaining:
+            cfg = toml.load(d / SopaFiles.TOML_CONFIG_FILE)
+            cfg.setdefault("segmentation", {})["scale"] = base_scale + delta
+            funcs.append(partial(BaysorPatch(cmd, cfg, force=True, capture_output=True), d))
+        settings._run_with_backend(funcs)
+        remaining = [d for d in remaining if not (d / "segmentation_counts.loom").exists()]
+
+    if len(remaining) < len(failed):
+        # Re-resolve all patches now that more have output.
+        from sopa.utils import get_transcripts_patches_dirs
+        dirs = [Path(d) for d in get_transcripts_patches_dirs(sdata)]
+        ok = [d for d in dirs if (d / "segmentation_counts.loom").exists()]
+        gene_col = toml.load(ok[0] / SopaFiles.TOML_CONFIG_FILE)["data"]["gene"]
+        _bm.resolve(sdata, ok, gene_column=gene_col, min_area=params.get("min_area", 10),
+                    key_added=SopaKeys.BAYSOR_BOUNDARIES)
+        _bm.set_boundaries_attrs(sdata, SopaKeys.BAYSOR_BOUNDARIES)
+    return remaining
+
+
 def _install_baysor_wrapper(error_log: str):
     """
     Wrap the baysor binary so its stdout/stderr surface in a persistent error log.
@@ -103,6 +151,15 @@ def main():
             pass
 
     import sopa
+    # sopa caches un-backed sdata patches in ~/.sopa_cache (home quota, small).
+    # Redirect to a dir on the data volume. Config: baysor params.cache_dir,
+    # default <output_dir>/.sopa_cache.
+    import sopa.utils.utils as _sopa_utils
+    cache_root = Path(params.get("cache_dir") or output_dir / ".sopa_cache")
+    cache_root.mkdir(parents=True, exist_ok=True)
+    _sopa_utils.HOME_CACHE_DIR = cache_root
+    print(f"[INFO] sopa patch cache: {cache_root}")
+
     if params.get("parallelization_backend") == "dask":
         sopa.settings.parallelization_backend = "dask"
 
@@ -139,7 +196,31 @@ def main():
         def _run():
             try:
                 baysor_kwargs = {"min_area": params.get("min_area", 10), "scale": params.get("scale", 15)}
-                sopa.segmentation.baysor(sdata, **baysor_kwargs)
+                # force=True: a patch whose Baysor run fails (e.g. the Baysor 0.7.1
+                # loom-writer bug) is skipped instead of aborting all patches.
+                # Cache is kept so we can count failures, then deleted below.
+                sopa.segmentation.baysor(sdata, force=True, delete_cache=False, **baysor_kwargs)
+
+                from sopa.utils import get_transcripts_patches_dirs
+                dirs = get_transcripts_patches_dirs(sdata)
+                failed = [d for d in dirs if not (Path(d) / "segmentation_counts.loom").exists()]
+                if failed:
+                    failed = _retry_failed_patches(sdata, failed, baysor_kwargs, params)
+                max_frac = params.get("max_failed_patch_fraction", 0.02)
+                print(f"[INFO] Baysor patches failed: {len(failed)} / {len(dirs)} (limit {max_frac:.0%})")
+                for d in failed[:50]:
+                    print(f"[WARN] failed patch: {d}")
+                if len(failed) > max_frac * len(dirs):
+                    raise TooManyFailedPatches(
+                        f"{len(failed)}/{len(dirs)} Baysor patches failed (> {max_frac:.0%}); "
+                        "see baysor_errors.log")
+                try:
+                    from sopa.utils import delete_transcripts_patches_dirs
+                    delete_transcripts_patches_dirs(sdata)
+                except Exception as ce:
+                    print(f"[WARN] Could not delete patch cache: {ce}")
+            except TooManyFailedPatches:
+                raise
             except Exception as e:
                 print(f"[WARN] Baysor dask run failed ({type(e).__name__}: {e})")
                 print("[WARN] Attempting to resolve completed patches from disk...")
