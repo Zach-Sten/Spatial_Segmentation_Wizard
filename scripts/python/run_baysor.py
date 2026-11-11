@@ -35,6 +35,33 @@ class TooManyFailedPatches(RuntimeError):
     pass
 
 
+def _patch_ok(d):
+    """A patch is usable only if Baysor wrote both the loom and a polygon file."""
+    d = Path(d)
+    has_poly = any(d.glob("segmentation_polygons*.json")) or (d / "segmentation.json").exists()
+    return (d / "segmentation_counts.loom").exists() and has_poly
+
+
+def _patch_sopa_resolve_to_skip_failed():
+    """
+    sopa.segmentation.baysor() resolves ALL patch dirs and asserts if any lacks
+    output, so a single failed patch aborts the whole run before our retry/skip
+    logic can run. Make its resolve() ignore patches without complete output.
+    """
+    from sopa.segmentation.methods import _baysor as _bm
+    orig = _bm.resolve
+    if getattr(orig, "_skips_failed", False):
+        return
+
+    def resolve_ok_only(sdata, patches_dirs, *a, **kw):
+        ok = [d for d in patches_dirs if _patch_ok(d)]
+        if len(ok) < len(patches_dirs):
+            print(f"[WARN] Skipping {len(patches_dirs) - len(ok)} patch(es) without complete Baysor output")
+        return orig(sdata, ok, *a, **kw)
+    resolve_ok_only._skips_failed = True
+    _bm.resolve = resolve_ok_only
+
+
 def _retry_failed_patches(sdata, failed, baysor_kwargs, params):
     """
     Re-run failed patches with a slightly perturbed Baysor scale, then re-resolve.
@@ -65,13 +92,13 @@ def _retry_failed_patches(sdata, failed, baysor_kwargs, params):
             cfg.setdefault("segmentation", {})["scale"] = base_scale + delta
             funcs.append(partial(BaysorPatch(cmd, cfg, force=True, capture_output=True), d))
         settings._run_with_backend(funcs)
-        remaining = [d for d in remaining if not (d / "segmentation_counts.loom").exists()]
+        remaining = [d for d in remaining if not _patch_ok(d)]
 
     if len(remaining) < len(failed):
         # Re-resolve all patches now that more have output.
         from sopa.utils import get_transcripts_patches_dirs
         dirs = [Path(d) for d in get_transcripts_patches_dirs(sdata)]
-        ok = [d for d in dirs if (d / "segmentation_counts.loom").exists()]
+        ok = [d for d in dirs if _patch_ok(d)]
         gene_col = toml.load(ok[0] / SopaFiles.TOML_CONFIG_FILE)["data"]["gene"]
         _bm.resolve(sdata, ok, gene_column=gene_col, min_area=params.get("min_area", 10),
                     key_added=SopaKeys.BAYSOR_BOUNDARIES)
@@ -194,6 +221,7 @@ def main():
 
         @timed("Baysor segmentation")
         def _run():
+            _patch_sopa_resolve_to_skip_failed()
             try:
                 baysor_kwargs = {"min_area": params.get("min_area", 10), "scale": params.get("scale", 15)}
                 # force=True: a patch whose Baysor run fails (e.g. the Baysor 0.7.1
@@ -203,7 +231,7 @@ def main():
 
                 from sopa.utils import get_transcripts_patches_dirs
                 dirs = get_transcripts_patches_dirs(sdata)
-                failed = [d for d in dirs if not (Path(d) / "segmentation_counts.loom").exists()]
+                failed = [d for d in dirs if not _patch_ok(d)]
                 if failed:
                     failed = _retry_failed_patches(sdata, failed, baysor_kwargs, params)
                 max_frac = params.get("max_failed_patch_fraction", 0.02)
@@ -233,14 +261,7 @@ def main():
                 from sopa.utils import get_transcripts_patches_dirs
                 all_dirs = get_transcripts_patches_dirs(sdata)
 
-                def _patch_complete(p):
-                    p = Path(p)
-                    if not (p / "segmentation_counts.loom").exists():
-                        return False
-                    return (p / "segmentation_polygons.json").exists() or \
-                           (p / "segmentation.json").exists()
-
-                completed = [p for p in all_dirs if _patch_complete(p)]
+                completed = [p for p in all_dirs if _patch_ok(p)]
                 print(f"[INFO] Completed patches on disk: {len(completed)} / {len(all_dirs)}")
 
                 if not completed:
