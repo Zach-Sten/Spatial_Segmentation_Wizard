@@ -270,6 +270,13 @@ def main():
                         "Check baysor logs for the root cause."
                     ) from e
 
+                max_frac = params.get("max_failed_patch_fraction", 0.02)
+                n_missing = len(all_dirs) - len(completed)
+                if n_missing > max_frac * len(all_dirs):
+                    raise TooManyFailedPatches(
+                        f"{n_missing}/{len(all_dirs)} Baysor patches have no output (> {max_frac:.0%}); "
+                        "refusing to resolve a partial result. See baysor_errors.log / SLURM .err (OOM?)") from e
+
                 min_area = params.get("min_area", 10)
                 resolve(sdata, completed, min_area=min_area, key_added="baysor_boundaries")
                 print(f"[INFO] Resolved from {len(completed)} patch(es) — baysor_boundaries added to sdata")

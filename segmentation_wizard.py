@@ -13,6 +13,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import yaml
 import shutil
@@ -344,6 +345,16 @@ def wizard():
         METHOD_DEFAULTS["baysor"]["params"]["patch_width"] = pw
         if pw > 500:
             print(f"  {YELLOW}⚠ {pw}µm is above the recommended 500 — expect higher memory use.{RESET}")
+
+        print(f"\n  {YELLOW}Baysor job memory (SLURM --mem){RESET}")
+        print(f"  {DIM}Default {SEG_MEM}. Raise it (e.g. 600G, 800G) if the job is OOM-killed;")
+        print(f"  patches run in parallel, one per CPU, so memory scales with CPUs and patch width.{RESET}")
+        while True:
+            val = prompt("Baysor memory", default=SEG_MEM).strip().upper()
+            if re.fullmatch(r"\d+[MGT]", val):
+                break
+            print(f"  {RED}Use a number plus M/G/T, e.g. 400G.{RESET}")
+        METHOD_DEFAULTS["baysor"]["slurm"]["mem"] = val
 
     # StarDist pretrained models are baked into the container image
     # (STARDIST_MODELS_DIR); run_stardist.py stages them from there at job
