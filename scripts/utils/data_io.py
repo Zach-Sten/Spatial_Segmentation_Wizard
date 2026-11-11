@@ -170,12 +170,14 @@ def load_platform_data(platform: str, raw_data_path: str):
 # ── Patch preparation ──
 @timed("Prepare patches")
 def prepare_patches(sdata, image_patch_width=1200, image_patch_overlap=10,
-                    transcript_patch_width=None, prior_shapes_key="cell_boundaries"):
+                    transcript_patch_width=None, prior_shapes_key="cell_boundaries",
+                    image_key="morphology_focus"):
     """Create image and transcript patches for segmentation."""
     import sopa
 
-    sopa.segmentation.tissue(sdata)
-    sopa.make_image_patches(sdata, patch_width=image_patch_width, patch_overlap=image_patch_overlap)
+    sopa.segmentation.tissue(sdata, image_key=image_key)
+    sopa.make_image_patches(sdata, patch_width=image_patch_width, patch_overlap=image_patch_overlap,
+                            image_key=image_key)
 
     kwargs = {"patch_width": transcript_patch_width}
     if prior_shapes_key:
