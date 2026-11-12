@@ -197,7 +197,9 @@ def aggregate_and_save(sdata, output_dir: Path, sample_id: str,
     """Aggregate counts, save h5ad, and export for Explorer."""
     import sopa
 
-    sopa.aggregate(sdata)
+    # protein_focus (if extracted) makes the image ambiguous; sopa requires an explicit key.
+    image_key = "morphology_focus" if "morphology_focus" in sdata.images else next(iter(sdata.images), None)
+    sopa.aggregate(sdata, image_key=image_key)
     adata = sdata["table"]
 
     # Save h5ad
