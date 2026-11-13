@@ -232,6 +232,7 @@ def aggregate_and_save(sdata, output_dir: Path, sample_id: str,
         str(output_dir),
         sdata,
         mode=explorer_mode,
+        image_key=image_key,
         save_h5ad=False,
     )
     print(f"[INFO] Explorer export complete: {output_dir}")
